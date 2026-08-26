@@ -39,6 +39,9 @@ type Gateway struct {
 
 	// OnTaskResult 是 task_result 回传回调（由 tasks 模块注入）。
 	OnTaskResult func(*protocol.TaskResult)
+
+	// OnTrafficDelta 是流量增量回调（由 traffic 模块注入）。
+	OnTrafficDelta func(*protocol.TrafficDelta)
 }
 
 type agentConn struct {
@@ -225,8 +228,16 @@ func (g *Gateway) dispatch(ac *agentConn, env *protocol.Envelope) {
 			}
 		}
 
-	case protocol.MsgSyncState, protocol.MsgTrafficDelta:
-		// Phase 5+ / 6 处理，先记录已收到。
+	case protocol.MsgTrafficDelta:
+		if g.OnTrafficDelta != nil {
+			var td protocol.TrafficDelta
+			if err := env.PayloadInto(&td); err == nil {
+				g.OnTrafficDelta(&td)
+			}
+		}
+
+	case protocol.MsgSyncState:
+		// Phase 5+ 处理 config_revision 同步，先记录。
 
 	default:
 		slog.Debug("未处理的消息类型", "type", env.Type)

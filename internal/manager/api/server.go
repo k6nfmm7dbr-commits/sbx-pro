@@ -21,6 +21,7 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/machines"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/nodes"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/tasks"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/traffic"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
 )
 
@@ -35,6 +36,12 @@ type Server struct {
 // New 构造 Server。
 func New(cfg *config.Config, db *db.Manager) *Server {
 	gw := gateway.New(db)
+	gw.OnTrafficDelta = func(td *protocol.TrafficDelta) {
+		// 流量增量入库（防重）。失败仅日志，不影响连接。
+		if _, err := traffic.IngestDelta(db.SQL(), *td); err != nil {
+			slog.Warn("流量增量入库失败", "machine_id", td.MachineID, "seq", td.Sequence, "err", err)
+		}
+	}
 	return &Server{
 		cfg:        cfg,
 		db:         db,
@@ -127,6 +134,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(route, "/api/nodes/") && strings.HasSuffix(route, "/share") &&
 		r.Method == http.MethodGet:
 		s.handleNodeShare(w, r, route)
+
+	case route == "/api/traffic" && r.Method == http.MethodGet:
+		s.handleTraffic(w, r)
 
 	default:
 		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -385,6 +395,33 @@ func (s *Server) handleNodeShare(w http.ResponseWriter, r *http.Request, route s
 	s.sendJSON(w, http.StatusOK, map[string]any{
 		"node_uuid": n.NodeUUID,
 		"config":    cfg,
+	})
+}
+
+// handleTraffic 返回全局流量汇总（多机）。
+func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		s.sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	machineID := r.URL.Query().Get("machine_id")
+	totals, err := traffic.TotalsByMachine(s.db.SQL(), machineID)
+	if err != nil {
+		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if totals == nil {
+		totals = []traffic.TotalNode{}
+	}
+	var rxSum, txSum int64
+	for _, t := range totals {
+		rxSum += t.Rx
+		txSum += t.Tx
+	}
+	s.sendJSON(w, http.StatusOK, map[string]any{
+		"totals":   totals,
+		"rx_total": rxSum,
+		"tx_total": txSum,
 	})
 }
 

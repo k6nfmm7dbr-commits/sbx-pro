@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/client"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/executor"
@@ -20,10 +22,28 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/nodesvc"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/state"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/sysinfo"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/trafsync"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/config"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/database"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/nodes"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/version"
 )
+
+// trafficSender 实现 trafsync.Sender，串行发送流量增量。
+type trafficSender struct {
+	mu   sync.Mutex
+	conn *client.AgentConn
+}
+
+func (s *trafficSender) SendTrafficDelta(td protocol.TrafficDelta) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn == nil {
+		return fmt.Errorf("连接未建立")
+	}
+	return s.conn.SendTrafficDelta(td)
+}
 
 func main() {
 	setupLogging()
@@ -127,6 +147,26 @@ func runAgent(args []string) int {
 	svc := nodesvc.New("") // 节点数据目录默认 /etc/sbx，可用 SBX_DIR 覆盖
 	handlers.Register(exec, svc)
 
+	// 流量采集 + 同步（复用原 sbx 采集器 + nft 计数）。
+	trafficDB, err := database.Open(filepath.Join(nodesvc.DefaultAppDir(), "traffic.db"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[sbx-agent] 打开流量数据库失败:", err)
+		return 1
+	}
+	defer trafficDB.Close()
+	tcfg := &config.Config{
+		DB:        filepath.Join(nodesvc.DefaultAppDir(), "traffic.db"),
+		NodesFile: filepath.Join(nodesvc.DefaultAppDir(), "nodes.json"),
+		NftConf:   filepath.Join(nodesvc.DefaultAppDir(), "nft.conf"),
+		IptScript: filepath.Join(nodesvc.DefaultAppDir(), "iptables.sh"),
+		Backend:   "nft",
+		Interval:  2,
+		TZ:        "Asia/Shanghai",
+	}
+	traf := trafsync.New(tcfg, trafficDB, st.MachineID,
+		func() []nodes.Node { return svc.List() },
+		&trafficSender{})
+
 	cfg := client.RunConfig{
 		ManagerURL:    st.ManagerURL,
 		MachineID:     st.MachineID,
@@ -142,6 +182,28 @@ func runAgent(args []string) int {
 		OnTask: func(ac *client.AgentConn, env *protocol.Envelope) {
 			res := exec.Handle(env)
 			_ = ac.Send(protocol.MsgTaskResult, env.ID, res)
+		},
+		OnConnect: func(ac *client.AgentConn) {
+			// 连接建立后启动流量同步循环。
+			traf.Sender = &trafficSender{conn: ac}
+			go func() {
+				// 先应用 nft 规则，再周期采集 + 同步。
+				if err := traf.ApplyRules(); err != nil {
+					slog.Warn("初始应用 nft 规则失败", "err", err)
+				}
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if err := traf.SyncOnce(ctx); err != nil {
+							slog.Warn("流量同步失败", "err", err)
+						}
+					}
+				}
+			}()
 		},
 	}
 

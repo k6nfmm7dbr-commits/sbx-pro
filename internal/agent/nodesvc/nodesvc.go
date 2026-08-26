@@ -36,10 +36,7 @@ type Service struct {
 // 与 sing-box 配套；可通过 SBX_DIR 环境变量覆盖）。
 func New(appDir string) *Service {
 	if appDir == "" {
-		appDir = os.Getenv("SBX_DIR")
-		if appDir == "" {
-			appDir = "/etc/sbx"
-		}
+		appDir = DefaultAppDir()
 	}
 	s := &Service{
 		Store:   &nodes.Store{AppDir: appDir, SBConf: "/etc/sing-box/config.json"},
@@ -50,6 +47,14 @@ func New(appDir string) *Service {
 	s.restartFn = s.restart
 	s.healthFn = s.isRunning
 	return s
+}
+
+// DefaultAppDir 返回节点数据目录（SBX_DIR 优先，默认 /etc/sbx）。
+func DefaultAppDir() string {
+	if v := os.Getenv("SBX_DIR"); v != "" {
+		return v
+	}
+	return "/etc/sbx"
 }
 
 // check 用 sing-box check 校验配置。

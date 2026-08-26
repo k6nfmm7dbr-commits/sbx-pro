@@ -25,6 +25,7 @@ type RunConfig struct {
 	HeartbeatSec  int
 	HeartbeatFunc func() protocol.Heartbeat
 	OnTask        func(ac *AgentConn, env *protocol.Envelope) // Phase 4 任务回调
+	OnConnect     func(ac *AgentConn)                         // 认证成功后的回调（启动子服务）
 }
 
 // Run 建立 WebSocket 连接并持续运行（阻塞），断线自动重连。
@@ -33,7 +34,10 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	if cfg.HeartbeatSec <= 0 {
 		cfg.HeartbeatSec = 15
 	}
-	backoff := []time.Duration{1, 2, 4, 8, 15, 30, 60}
+	backoff := []time.Duration{
+		1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second,
+		15 * time.Second, 30 * time.Second, 60 * time.Second,
+	}
 	idx := 0
 	for {
 		select {
@@ -95,6 +99,11 @@ func runOnce(ctx context.Context, cfg RunConfig) error {
 	_ = conn.SetReadDeadline(time.Time{})
 	slog.Info("已连接 Manager 并通过认证", "machine_id", cfg.MachineID)
 
+	// 认证成功回调（启动流量同步等子服务）。
+	if cfg.OnConnect != nil {
+		cfg.OnConnect(ac)
+	}
+
 	// 心跳 ticker。
 	hbTicker := time.NewTicker(time.Duration(cfg.HeartbeatSec) * time.Second)
 	defer hbTicker.Stop()
@@ -154,6 +163,11 @@ func (ac *AgentConn) read() (*protocol.Envelope, error) {
 // Send 串行化发送一条消息。
 func (ac *AgentConn) Send(typ, id string, payload any) error {
 	return ac.send(typ, id, payload)
+}
+
+// SendTrafficDelta 发送流量增量。
+func (ac *AgentConn) SendTrafficDelta(td protocol.TrafficDelta) error {
+	return ac.send(protocol.MsgTrafficDelta, "", td)
 }
 
 func (ac *AgentConn) send(typ, id string, payload any) error {
