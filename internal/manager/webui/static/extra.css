@@ -1,33 +1,101 @@
-/* SBX Pro 补充样式：按钮 / 弹层 */
+/* SBX Pro 补充样式：按钮 / 弹层 / 表单 / 详情 */
 
 .btn-primary {
   border: 0; border-radius: 10px; cursor: pointer;
   background: linear-gradient(135deg, #6366f1, #4f46e5); color: #fff;
-  font: 700 13px var(--font); padding: 9px 15px;
+  font: 700 13px var(--font); padding: 10px 16px;
   box-shadow: 0 4px 12px rgba(79,70,229,.22);
+  min-height: 40px;
 }
 .btn-primary:active { transform: translateY(1px); }
+.btn-primary:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+
 .btn-ghost {
   border: 1px solid var(--line); border-radius: 10px; cursor: pointer;
-  background: #fff; color: var(--muted); font: 600 13px var(--font); padding: 9px 15px;
+  background: #fff; color: var(--muted); font: 600 13px var(--font); padding: 10px 16px;
+  min-height: 40px;
 }
 
+.btn-danger {
+  border: 0; border-radius: 10px; cursor: pointer;
+  background: #dc2626; color: #fff; font: 700 13px var(--font); padding: 10px 16px;
+  min-height: 40px;
+}
+
+.btn-mini {
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+  background: #fff; color: var(--muted); font: 600 12px var(--font); padding: 6px 11px;
+  min-height: 34px;
+}
+.btn-mini.btn-danger { border-color: #fecaca; color: #dc2626; background: #fff; }
+
+/* ---------- 弹层 ---------- */
 .modal {
   position: fixed; inset: 0; z-index: 60;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(20,24,40,.42); padding: 20px;
+  background: rgba(20,24,40,.48); padding: 20px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
+.modal[hidden] { display: none !important; }
 .modal-box {
-  width: min(400px, 100%);
+  width: min(420px, 100%);
   background: var(--card); border-radius: 18px; padding: 22px;
   box-shadow: 0 20px 60px rgba(20,24,40,.25);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
+.modal-box-sm { width: min(340px, 100%); }
 .modal-box h3 { margin: 0 0 16px; font-size: 17px; font-weight: 750; }
-.modal-box form { display: flex; flex-direction: column; gap: 10px; }
+.modal-box form { display: flex; flex-direction: column; gap: 8px; }
 .modal-box select, .modal-box input {
   width: 100%; padding: 11px 12px;
-  border: 1px solid var(--line); border-radius: 11px; font: 14px var(--font);
-  color: var(--ink); outline: none;
+  border: 1px solid var(--line); border-radius: 11px; font: 15px var(--font);
+  color: var(--ink); outline: none; background: #fff;
+  min-height: 44px;
 }
-.modal-box select:focus, .modal-box input:focus { border-color: var(--accent); }
-.modal-box button[type="submit"] { width: 100%; }
+.modal-box select:focus, .modal-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* 表单 */
+.field-label { font-size: 12px; color: var(--muted); font-weight: 600; margin-top: 4px; }
+.form-error {
+  background: #fef2f2; border: 1px solid #fecaca; color: #dc2626;
+  border-radius: 10px; padding: 10px 12px; font-size: 13px; word-break: break-word;
+}
+.form-actions { display: flex; gap: 10px; margin-top: 12px; }
+.form-actions .btn-primary, .form-actions .btn-ghost, .form-actions .btn-danger { flex: 1; }
+
+/* 文本提示 */
+.hint-text { color: var(--muted); font-size: 13px; margin: 0 0 14px; line-height: 1.6; }
+
+/* 节点操作按钮行 */
+.node-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+/* 分享链接 */
+.share-code {
+  display: block; word-break: break-all; font-size: 12px; line-height: 1.5;
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: 8px; padding: 8px 10px; margin: 6px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 详情 */
+.node-detail { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.detail-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.detail-row b { color: var(--ink); font-weight: 700; }
+.detail-row:last-child { border-bottom: 0; }
+
+.chip-rev { background: #f1f5f9; color: #64748b; }
+
+/* toast 错误态 */
+.toast-error { background: #dc2626; }
+
+/* modal 打开时锁定背景滚动 */
+body.modal-open { overflow: hidden; }
+
+/* 小屏适配：让输入框与按钮触摸区域更友好 */
+@media (max-width: 400px) {
+  .modal-box { padding: 18px 16px; }
+  .btn-mini { padding: 7px 10px; min-height: 36px; }
+}
