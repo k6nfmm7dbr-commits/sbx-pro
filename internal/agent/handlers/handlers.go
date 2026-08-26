@@ -37,6 +37,23 @@ func applyNode(svc *nodesvc.Service) (string, error) {
 	return fmt.Sprintf("applied(rc=%d)", rc), nil
 }
 
+// resolveNodeID 从 payload 解析节点本地 id：优先 node_uuid，回退 node_id。
+func resolveNodeID(svc *nodesvc.Service, payload json.RawMessage) (string, error) {
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return "", fmt.Errorf("payload 解析失败: %w", err)
+	}
+	if u, _ := m["node_uuid"].(string); u != "" {
+		if id, err := svc.FindByUUID(u); err == nil {
+			return id, nil
+		}
+	}
+	if id, _ := m["node_id"].(string); id != "" {
+		return id, nil
+	}
+	return "", fmt.Errorf("缺少 node_uuid/node_id")
+}
+
 // Register 注册所有任务处理器到 executor。
 // svc 是 Agent 节点服务（管理 sing-box + nodes.json）。
 // qs 是 quota 状态，ils 是 IP limit 状态（可为 nil，则跳过对应处理器）。
@@ -71,16 +88,21 @@ func Register(e *executor.Executor, svc *nodesvc.Service, qs *quota.State, ils *
 		return "node_id=" + id, nil
 	})
 
-	// update_node：payload 含 node_id + 变更字段。
+	// update_node：payload 含 node_uuid + 完整新节点定义。
 	e.Register(protocol.MsgUpdateNode, func(db *sql.DB, payload json.RawMessage) (string, error) {
-		var req struct {
-			NodeID  string            `json:"node_id"`
-			Changes map[string]string `json:"changes"`
-		}
-		if err := json.Unmarshal(payload, &req); err != nil {
+		var m map[string]any
+		if err := json.Unmarshal(payload, &m); err != nil {
 			return "", fmt.Errorf("更新定义解析失败: %w", err)
 		}
-		if err := svc.EditNode(req.NodeID, req.Changes); err != nil {
+		uuid, _ := m["node_uuid"].(string)
+		if uuid == "" {
+			return "", fmt.Errorf("缺少 node_uuid")
+		}
+		n := nodes.Node{}
+		for k, v := range m {
+			n[k] = v
+		}
+		if err := svc.ReplaceNode(uuid, n); err != nil {
 			return "", err
 		}
 		if _, err := applyNode(svc); err != nil {
@@ -89,15 +111,13 @@ func Register(e *executor.Executor, svc *nodesvc.Service, qs *quota.State, ils *
 		return "updated", nil
 	})
 
-	// delete_node：payload 含 node_id。
+	// delete_node：payload 含 node_uuid。
 	e.Register(protocol.MsgDeleteNode, func(db *sql.DB, payload json.RawMessage) (string, error) {
-		var req struct {
-			NodeID string `json:"node_id"`
+		id, err := resolveNodeID(svc, payload)
+		if err != nil {
+			return "", err
 		}
-		if err := json.Unmarshal(payload, &req); err != nil {
-			return "", fmt.Errorf("删除定义解析失败: %w", err)
-		}
-		if err := svc.RemoveNode(req.NodeID); err != nil {
+		if err := svc.RemoveNode(id); err != nil {
 			return "", err
 		}
 		if _, err := applyNode(svc); err != nil {
@@ -106,45 +126,68 @@ func Register(e *executor.Executor, svc *nodesvc.Service, qs *quota.State, ils *
 		return "deleted", nil
 	})
 
-	// enable_node / disable_node：占位（Phase 5 只做整体节点状态，具体启停后续）。
+	// enable_node / disable_node：真实启用/停用节点。
 	e.Register(protocol.MsgEnableNode, func(db *sql.DB, payload json.RawMessage) (string, error) {
-		return "enabled(待实现)", nil
+		id, err := resolveNodeID(svc, payload)
+		if err != nil {
+			return "", err
+		}
+		if err := svc.SetEnabled(id, true); err != nil {
+			return "", err
+		}
+		if _, err := applyNode(svc); err != nil {
+			return "", fmt.Errorf("节点已启用但应用失败: %w", err)
+		}
+		return "enabled", nil
 	})
 	e.Register(protocol.MsgDisableNode, func(db *sql.DB, payload json.RawMessage) (string, error) {
-		return "disabled(待实现)", nil
+		id, err := resolveNodeID(svc, payload)
+		if err != nil {
+			return "", err
+		}
+		if err := svc.SetEnabled(id, false); err != nil {
+			return "", err
+		}
+		if _, err := applyNode(svc); err != nil {
+			return "", fmt.Errorf("节点已停用但应用失败: %w", err)
+		}
+		return "disabled", nil
 	})
 
-	// restart_singbox：占位。
+	// restart_singbox：真实重启 + health check。
 	e.Register(protocol.MsgRestartSingbox, func(db *sql.DB, payload json.RawMessage) (string, error) {
-		return "restarted(待实现)", nil
+		ctx, cancel := contextForTask()
+		defer cancel()
+		if err := svc.Restart(ctx); err != nil {
+			return "", err
+		}
+		return "restarted", nil
 	})
 
 	// set_quota / reset_quota：设置/重置节点流量限额。
 	if qs != nil {
 		e.Register(protocol.MsgSetQuota, func(db *sql.DB, payload json.RawMessage) (string, error) {
+			id, err := resolveNodeID(svc, payload)
+			if err != nil {
+				return "", err
+			}
 			var req struct {
-				NodeID     string `json:"node_id"`
-				LimitBytes int64  `json:"limit_bytes"`
+				LimitBytes int64 `json:"limit_bytes"`
 			}
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return "", fmt.Errorf("quota 定义解析失败: %w", err)
 			}
-			if req.NodeID == "" {
-				return "", fmt.Errorf("缺少 node_id")
-			}
-			if err := qs.SetLimit(req.NodeID, req.LimitBytes); err != nil {
+			if err := qs.SetLimit(id, req.LimitBytes); err != nil {
 				return "", err
 			}
 			return "quota_set", nil
 		})
 		e.Register(protocol.MsgResetQuota, func(db *sql.DB, payload json.RawMessage) (string, error) {
-			var req struct {
-				NodeID string `json:"node_id"`
+			id, err := resolveNodeID(svc, payload)
+			if err != nil {
+				return "", err
 			}
-			if err := json.Unmarshal(payload, &req); err != nil {
-				return "", fmt.Errorf("quota 定义解析失败: %w", err)
-			}
-			if err := qs.ResetQuota(req.NodeID); err != nil {
+			if err := qs.ResetQuota(id); err != nil {
 				return "", err
 			}
 			return "quota_reset", nil
@@ -154,17 +197,17 @@ func Register(e *executor.Executor, svc *nodesvc.Service, qs *quota.State, ils *
 	// set_ip_limit：设置节点同时在线 IP 限制。
 	if ils != nil {
 		e.Register(protocol.MsgSetIPLimit, func(db *sql.DB, payload json.RawMessage) (string, error) {
+			id, err := resolveNodeID(svc, payload)
+			if err != nil {
+				return "", err
+			}
 			var req struct {
-				NodeID string `json:"node_id"`
-				Limit  int    `json:"ip_limit"`
+				Limit int `json:"ip_limit"`
 			}
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return "", fmt.Errorf("ip_limit 定义解析失败: %w", err)
 			}
-			if req.NodeID == "" {
-				return "", fmt.Errorf("缺少 node_id")
-			}
-			if err := ils.SetLimit(req.NodeID, req.Limit); err != nil {
+			if err := ils.SetLimit(id, req.Limit); err != nil {
 				return "", err
 			}
 			return "ip_limit_set", nil

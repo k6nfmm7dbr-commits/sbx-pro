@@ -17,6 +17,10 @@ type Dispatcher struct {
 	Gateway *gateway.Gateway
 	// Timeout 是任务超时阈值（默认 60s）。
 	Timeout time.Duration
+
+	// OnTaskComplete 是任务最终完成回调（success/failed），由 api 层注入，
+	// 用于驱动节点状态机 / revision 同步等 desired-actual 收敛逻辑。
+	OnTaskComplete func(task *Task, status protocol.TaskStatus, message string)
 }
 
 // NewDispatcher 构造并注入 OnTaskResult 回调。
@@ -80,6 +84,13 @@ func (d *Dispatcher) handleTaskResult(tr *protocol.TaskResult) {
 		_ = Complete(d.DB, tr.TaskID, protocol.TaskFailed, tr.Message)
 	}
 	slog.Info("任务完成", "task_id", tr.TaskID, "status", tr.Status)
+
+	// 驱动 desired-actual 收敛（节点状态机等）。
+	if d.OnTaskComplete != nil {
+		if task, err := Get(d.DB, tr.TaskID); err == nil {
+			d.OnTaskComplete(task, tr.Status, tr.Message)
+		}
+	}
 }
 
 // RunTimeoutSweeper 周期把超时未完成的任务标记为 timeout。
@@ -102,12 +113,38 @@ func (d *Dispatcher) sweepTimeout() {
 	sentCutoff := time.Now().Add(-d.Timeout).Unix()
 	// 已发送但超时未完成 → timeout；pending 很久的（机器一直离线）也 timeout。
 	pendingCutoff := time.Now().Add(-2 * d.Timeout).Unix()
-	_, _ = d.DB.Exec(`
-		UPDATE tasks SET status = 'timeout', done_at = ?
-		WHERE status IN ('sent', 'running') AND sent_at < ?`,
-		time.Now().Unix(), sentCutoff)
-	_, _ = d.DB.Exec(`
-		UPDATE tasks SET status = 'timeout', done_at = ?
-		WHERE status = 'pending' AND created_at < ?`,
-		time.Now().Unix(), pendingCutoff)
+
+	// 先查出所有超时任务，逐个标记并触发收敛回调。
+	rows, err := d.DB.Query(`
+		SELECT task_id FROM tasks
+		WHERE (status IN ('sent','running') AND sent_at < ?)
+		   OR (status = 'pending' AND created_at < ?)`,
+		sentCutoff, pendingCutoff)
+	if err != nil {
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		res, _ := d.DB.Exec(`
+			UPDATE tasks SET status = 'timeout', done_at = ?
+			WHERE task_id = ? AND status IN ('pending','sent','running')`,
+			time.Now().Unix(), id)
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue
+		}
+		if d.OnTaskComplete != nil {
+			if task, err := Get(d.DB, id); err == nil {
+				d.OnTaskComplete(task, protocol.TaskTimeout, "任务超时")
+			}
+		}
+	}
 }

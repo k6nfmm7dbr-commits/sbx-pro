@@ -105,6 +105,13 @@ func List(db *sql.DB) ([]Machine, error) {
 	return out, rows.Err()
 }
 
+// BumpConfigRevision 递增某机器的 desired config_revision（影响 sing-box 配置的变更）。
+func BumpConfigRevision(db *sql.DB, machineID string) error {
+	_, err := db.Exec(`
+		UPDATE machines SET config_revision = config_revision + 1 WHERE machine_id = ?`, machineID)
+	return err
+}
+
 // Delete 删除机器管理关系（开发提示词第五十节：只删 Manager 侧，不卸远端）。
 func Delete(db *sql.DB, machineID string) error {
 	tx, err := db.Begin()

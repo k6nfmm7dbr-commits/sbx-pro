@@ -91,6 +91,19 @@ func (s *Service) Info(id string) (nodes.Node, error) {
 	return nil, fmt.Errorf("未找到节点 id=%s", id)
 }
 
+// FindByUUID 通过全局 node_uuid 查找本地节点 id。
+func (s *Service) FindByUUID(uuid string) (string, error) {
+	if uuid == "" {
+		return "", fmt.Errorf("缺少 node_uuid")
+	}
+	for _, n := range s.List() {
+		if nodes.Str(n, "node_uuid") == uuid {
+			return nodes.IDString(n), nil
+		}
+	}
+	return "", fmt.Errorf("未找到节点 node_uuid=%s", uuid)
+}
+
 // Links 返回单个节点分享链接（复用原 LinkFor）。
 func (s *Service) Links(id string) (string, error) {
 	n, err := s.Info(id)
@@ -196,11 +209,19 @@ func (s *Service) EditNode(id string, changes map[string]string) error {
 }
 
 // writeCandidates 校验节点列表并写出 candidate 配置 + candidate nodes。
+// 禁用节点（disabled=true）不生成 inbound，但 nodes.json 保留完整列表（凭据不删）。
 func (s *Service) writeCandidates(list []nodes.Node) (string, string, error) {
 	if err := validateNodes(list); err != nil {
 		return "", "", err
 	}
-	cfg, err := nodes.RebuildConfig(s.Store, list)
+	active := make([]nodes.Node, 0, len(list))
+	for _, n := range list {
+		if nodes.Truthy(n, "disabled") {
+			continue
+		}
+		active = append(active, n)
+	}
+	cfg, err := nodes.RebuildConfig(s.Store, active)
 	if err != nil {
 		return "", "", err
 	}
@@ -213,6 +234,75 @@ func (s *Service) writeCandidates(list []nodes.Node) (string, string, error) {
 		return "", "", err
 	}
 	return cand, nodesCand, nil
+}
+
+// ReplaceNode 用完整节点定义替换指定 node_uuid 的节点（保留 local id 与 disabled 状态）。
+func (s *Service) ReplaceNode(uuid string, newNode nodes.Node) error {
+	list, err := nodes.LoadToolNodesStrict(s.Store.NodesPath())
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, n := range list {
+		if nodes.Str(n, "node_uuid") == uuid {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("未找到节点 node_uuid=%s", uuid)
+	}
+	old := list[idx]
+	newNode["id"] = old["id"]
+	if nodes.Str(newNode, "name") == "" {
+		newNode["name"] = nodes.Str(old, "name")
+	}
+	if nodes.Truthy(old, "disabled") {
+		newNode["disabled"] = true
+	}
+	if t := nodes.Str(newNode, "type"); t == "trojan" || t == "anytls" {
+		newNode["cert"] = s.Store.CertDir() + "/cert.pem"
+		newNode["key"] = s.Store.CertDir() + "/key.pem"
+	}
+	list[idx] = newNode
+	_, _, err = s.writeCandidates(list)
+	return err
+}
+
+// SetEnabled 启用/停用节点（不删除凭据，仅控制是否生成 inbound）。
+func (s *Service) SetEnabled(id string, enabled bool) error {
+	list, err := nodes.LoadToolNodesStrict(s.Store.NodesPath())
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, n := range list {
+		if nodes.IDString(n) == id {
+			if enabled {
+				delete(n, "disabled")
+			} else {
+				n["disabled"] = true
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("未找到节点 id=%s", id)
+	}
+	_, _, err = s.writeCandidates(list)
+	return err
+}
+
+// Restart 真实重启 sing-box 服务并做 health check（失败返回错误，绝不吞）。
+func (s *Service) Restart(ctx context.Context) error {
+	if err := s.restartFn(ctx); err != nil {
+		return fmt.Errorf("sing-box 重启失败: %w", err)
+	}
+	if !s.healthFn() {
+		return fmt.Errorf("sing-box 重启后未进入运行状态")
+	}
+	return nil
 }
 
 // validateNodes 复用原 sbx 的语义校验（id/port 唯一、type 合法）。因原函数未导出，这里重实现。
