@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/audit"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/auth"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/config"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/db"
@@ -138,6 +139,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case route == "/api/traffic" && r.Method == http.MethodGet:
 		s.handleTraffic(w, r)
 
+	case route == "/api/audit" && r.Method == http.MethodGet:
+		s.handleAudit(w, r)
+
 	default:
 		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -206,6 +210,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Accepted:      true,
 	}
 	s.sendJSON(w, http.StatusOK, ack)
+	audit.Log(s.db.SQL(), "agent_register", id.MachineID, "", "ok", clientIP(r))
 	slog.Info("机器注册成功", "machine_id", id.MachineID, "hostname", hello.Hostname)
 }
 
@@ -371,6 +376,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit.Log(s.db.SQL(), "create_node", req.MachineID, n.NodeUUID, "ok", clientIP(r))
 	s.sendJSON(w, http.StatusOK, map[string]any{
 		"node_uuid": n.NodeUUID,
 		"task_id":   taskID,
@@ -398,6 +404,23 @@ func (s *Server) handleNodeShare(w http.ResponseWriter, r *http.Request, route s
 	})
 }
 
+// handleAudit 返回审计日志。
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		s.sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	list, err := audit.List(s.db.SQL(), 200)
+	if err != nil {
+		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if list == nil {
+		list = []audit.Entry{}
+	}
+	s.sendJSON(w, http.StatusOK, map[string]any{"audit_logs": list})
+}
+
 // handleTraffic 返回全局流量汇总（多机）。
 func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(r) {
@@ -423,6 +446,18 @@ func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 		"rx_total": rxSum,
 		"tx_total": txSum,
 	})
+}
+
+// clientIP 从请求提取来源 IP（考虑反代 X-Forwarded-For，但默认直连取 RemoteAddr）。
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.TrimSpace(strings.Split(xff, ",")[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // authorized 管理员鉴权：Bearer token（Phase 2 简化为常量时间比较）。

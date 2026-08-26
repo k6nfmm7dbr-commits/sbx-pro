@@ -72,18 +72,18 @@ SBX Pro 是 [sbx](https://github.com/k6nfmm7dbr-commits/sbx) 的进阶版：**�
 
 ## 开发状态
 
-按 Phase 1~10 分阶段实施：
+按 Phase 1~10 分阶段实施，已全部完成（commit 354f0ba..51fc642 及后续），真机端到端验证通过。
 
-- [x] **Phase 1** — 新仓库 + 骨架 + sbx-manager/sbx-agent 可编译（当前）
-- [ ] Phase 2 — Agent enrollment（token 一次性/过期 + 一键安装 + 注册）
-- [ ] Phase 3 — WebSocket + heartbeat + 断线重连
-- [ ] Phase 4 — 任务系统（幂等 + timeout）
-- [ ] Phase 5 — 节点管理迁移到 Manager
-- [ ] Phase 6 — 流量统计（Agent 本地 + 增量同步）
-- [ ] Phase 7 — Quota 流量限制
-- [ ] Phase 8 — 在线 IP 统计
-- [ ] Phase 9 — IP Limit enforcement
-- [ ] Phase 10 — 升级/审计/安全加固
+- [x] **Phase 1** — 新仓库 + 骨架 + sbx-manager/sbx-agent 可编译
+- [x] Phase 2 — Agent enrollment（token 一次性/过期 + 一键安装 + 注册）
+- [x] Phase 3 — WebSocket + heartbeat + 断线重连
+- [x] Phase 4 — 任务系统（幂等 + timeout）
+- [x] Phase 5 — 节点管理迁移到 Manager
+- [x] Phase 6 — 流量统计（Agent 本地 + 增量同步）
+- [x] Phase 7 — Quota 流量限制
+- [x] Phase 8 — 在线 IP 统计
+- [x] Phase 9 — IP Limit enforcement
+- [x] Phase 10 — 升级/审计/安全加固
 
 ## 构建
 
@@ -94,3 +94,67 @@ go vet ./...
 ```
 
 > 注意：iOS iSH 环境无法运行 Go 工具链（CPU 模拟限制），构建/测试请在真实 Linux 机器上进行。
+
+## 安装
+
+### Manager（面板机 A）
+
+```bash
+# 放置 sbx-manager 二进制到 /usr/local/bin/ 后：
+bash scripts/install-manager.sh
+# 输出管理面板地址 + 管理令牌
+```
+
+Manager 数据目录默认 `/etc/sbx-pro`（`SBX_PRO_DIR` 可覆盖），配置文件 `manager.json`。
+
+### Agent（节点机 B/C/D）
+
+在面板生成 enrollment token 后，复制一条命令到节点机执行：
+
+```bash
+bash <(curl -fLSs https://panel.example.com/install-agent.sh) -t TOKEN -u https://panel.example.com
+```
+
+脚本会：检查环境 → 安装 sing-box（sha256 pin）→ 下载 sbx-agent → 注册 → 启动 systemd 服务。
+
+## API 摘要
+
+管理员 API（Bearer token）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/healthz` | 健康检查 |
+| POST | `/api/enrollment/token` | 生成接入 token |
+| GET | `/api/machines` | 机器列表 |
+| GET | `/api/nodes` | 全局节点列表（脱敏） |
+| POST | `/api/nodes` | 创建节点（下发任务） |
+| GET | `/api/nodes/:id/share` | 分享链接（敏感，登录） |
+| POST | `/api/tasks` | 下发任务 |
+| GET | `/api/tasks` | 任务列表 |
+| GET | `/api/traffic` | 流量汇总 |
+| GET | `/api/audit` | 审计日志 |
+
+Agent 接入：`POST /api/agent/register`（注册）、`WS /api/agent/ws`（长连接）。
+
+## Agent 协议
+
+统一 envelope：`{"version":1,"type":"...","id":"...","timestamp":0,"payload":{}}`
+
+Agent → Manager：`hello` `heartbeat` `task_result` `traffic_delta` `traffic_snapshot` `ip_sync` `sync_state` 等
+
+Manager → Agent（走任务系统，幂等）：`create_node` `update_node` `delete_node` `set_quota` `reset_quota` `set_ip_limit` `sync_config` `request_status` `update_agent` 等
+
+## 从 sbx 迁移建议
+
+- 原 sbx 单机节点可平滑导入：Agent 安装时若检测到 `/etc/sbx/nodes.json` + `traffic.db`，后续版本支持自动导入（第一版预留迁移结构，未强制实现）。
+- 建议先在新节点机装 sbx-agent 接入验证，再迁移存量节点。
+
+## 仍未实现 / 已知待收口
+
+1. 任务失败时 Manager 侧节点记录未自动清理（留 `sync_pending` 脏数据）
+2. `/api/nodes/:id/share` 返回配置 JSON，未用 `LinkFor` 生成完整 URI（需本机 host）
+3. `config_revision` desired/applied 对比展示未实现
+4. `enable_node`/`disable_node`/`restart_singbox` 为占位 handler
+5. `update_agent` 自升级未实现
+6. gateway 认证严谨 Ed25519 验签待补
+7. 完整故障注入测试（Manager kill/断网/nft 重建等）待补
