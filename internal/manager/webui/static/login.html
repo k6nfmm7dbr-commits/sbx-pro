@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>登录 · SBX Pro</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="login-body">
+<div class="login">
+  <div class="brand-mark">SBX</div>
+  <h1>SBX Pro 控制台</h1>
+  <p>请输入管理令牌</p>
+  <div class="err" id="err"></div>
+  <form method="post" action="/login">
+    <input type="password" name="token" placeholder="管理令牌" autocomplete="current-password"
+           autofocus required aria-label="管理令牌">
+    <button type="submit">进入面板</button>
+  </form>
+</div>
+<script src="login.js"></script>
+</body>
+</html>

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/nodes"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/tasks"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/traffic"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/webui"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
 )
 
@@ -143,8 +145,89 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleAudit(w, r)
 
 	default:
+		s.handleWeb(w, r, route)
+	}
+}
+
+// handleWeb 处理前端页面与静态资源（未登录返回登录页）。
+func (s *Server) handleWeb(w http.ResponseWriter, r *http.Request, route string) {
+	switch {
+	case route == "/login" && r.Method == http.MethodPost:
+		s.handleLogin(w, r)
+
+	case route == "/login" && r.Method == http.MethodGet:
+		s.serveAsset(w, r, "login.html", "text/html; charset=utf-8")
+
+	case route == "/" || route == "/index.html":
+		if !s.authorized(r) {
+			s.serveAsset(w, r, "login.html", "text/html; charset=utf-8")
+			return
+		}
+		s.serveAsset(w, r, "index.html", "text/html; charset=utf-8")
+
+	case route == "/app.js":
+		s.serveAsset(w, r, "app.js", "application/javascript; charset=utf-8")
+	case route == "/login.js":
+		s.serveAsset(w, r, "login.js", "application/javascript; charset=utf-8")
+	case route == "/style.css":
+		s.serveAsset(w, r, "style.css", "text/css; charset=utf-8")
+	case route == "/extra.css":
+		s.serveAsset(w, r, "extra.css", "text/css; charset=utf-8")
+
+	default:
 		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+// handleLogin 处理管理员登录（POST /login，token 表单）。
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil || len(body) > 64<<10 {
+		http.Redirect(w, r, "/login?error=1", http.StatusFound)
+		return
+	}
+	vals, _ := url.ParseQuery(string(body))
+	given := ""
+	for _, v := range vals["token"] {
+		if v != "" {
+			given = v
+			break
+		}
+	}
+	if s.cfg.AdminToken != "" && constantTimeEq(given, s.cfg.AdminToken) {
+		http.SetCookie(w, &http.Cookie{
+			Name: "sbx_token", Value: given, Path: "/",
+			MaxAge: 604800, HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		})
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/login?error=1", http.StatusFound)
+}
+
+// assetBytes 从内嵌前端读取文件。
+func assetBytes(name string) ([]byte, error) {
+	f, err := webui.FS().Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// serveAsset 输出内嵌前端资源。
+func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, name, ctype string) {
+	data, err := assetBytes(name)
+	if err != nil {
+		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // handleRegister 处理 Agent 注册（开发提示词第六节）。
@@ -460,17 +543,22 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// authorized 管理员鉴权：Bearer token（Phase 2 简化为常量时间比较）。
-
+// authorized 管理员鉴权：支持 Bearer header 与 sbx_token cookie。
 func (s *Server) authorized(r *http.Request) bool {
 	token := s.cfg.AdminToken
 	if token == "" {
 		return true
 	}
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
+	// 1. Bearer header。
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		given := auth[len("Bearer "):]
 		if len(given) == len(token) && constantTimeEq(given, token) {
+			return true
+		}
+	}
+	// 2. cookie（前端登录后使用）。
+	if c, err := r.Cookie("sbx_token"); err == nil && c.Value != "" {
+		if len(c.Value) == len(token) && constantTimeEq(c.Value, token) {
 			return true
 		}
 	}

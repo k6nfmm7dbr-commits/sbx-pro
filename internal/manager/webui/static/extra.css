@@ -1,0 +1,33 @@
+/* SBX Pro 补充样式：按钮 / 弹层 */
+
+.btn-primary {
+  border: 0; border-radius: 10px; cursor: pointer;
+  background: linear-gradient(135deg, #6366f1, #4f46e5); color: #fff;
+  font: 700 13px var(--font); padding: 9px 15px;
+  box-shadow: 0 4px 12px rgba(79,70,229,.22);
+}
+.btn-primary:active { transform: translateY(1px); }
+.btn-ghost {
+  border: 1px solid var(--line); border-radius: 10px; cursor: pointer;
+  background: #fff; color: var(--muted); font: 600 13px var(--font); padding: 9px 15px;
+}
+
+.modal {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20,24,40,.42); padding: 20px;
+}
+.modal-box {
+  width: min(400px, 100%);
+  background: var(--card); border-radius: 18px; padding: 22px;
+  box-shadow: 0 20px 60px rgba(20,24,40,.25);
+}
+.modal-box h3 { margin: 0 0 16px; font-size: 17px; font-weight: 750; }
+.modal-box form { display: flex; flex-direction: column; gap: 10px; }
+.modal-box select, .modal-box input {
+  width: 100%; padding: 11px 12px;
+  border: 1px solid var(--line); border-radius: 11px; font: 14px var(--font);
+  color: var(--ink); outline: none;
+}
+.modal-box select:focus, .modal-box input:focus { border-color: var(--accent); }
+.modal-box button[type="submit"] { width: 100%; }

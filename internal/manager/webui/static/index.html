@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SBX Pro 控制台</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="extra.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">SBX</div>
+    <div class="brand-text">
+      <h1>SBX Pro 控制台</h1>
+      <p id="status-txt" class="status-txt">连接中…</p>
+    </div>
+  </div>
+  <span id="pulse" class="pulse"></span>
+</header>
+
+<main class="main">
+  <!-- 首页 -->
+  <div id="view-home" class="view on">
+    <section class="stats">
+      <div class="stat"><label>机器总数</label><strong id="kpi-machines">—</strong></div>
+      <div class="stat"><label>在线机器</label><strong id="kpi-online" class="up">—</strong></div>
+      <div class="stat"><label>节点总数</label><strong id="kpi-nodes">—</strong></div>
+      <div class="stat"><label>累计流量</label><strong id="kpi-total">—</strong></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>机器</h2>
+        <span class="count">共 <b id="kpi-machine-count">0</b> 台</span>
+      </div>
+      <div id="machine-list" class="node-list"></div>
+      <div class="empty" id="machine-empty" style="display:none">暂无机器，请先「接入」生成安装命令</div>
+    </section>
+  </div>
+
+  <!-- 节点 -->
+  <div id="view-nodes" class="view">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>节点</h2>
+        <button class="btn-primary" id="btn-add-node">添加节点</button>
+      </div>
+      <div id="node-list" class="node-list"></div>
+      <div class="empty" id="node-empty" style="display:none">暂无节点</div>
+    </section>
+  </div>
+
+  <!-- 接入 -->
+  <div id="view-join" class="view">
+    <section class="panel">
+      <div class="panel-head"><h2>接入节点机</h2></div>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 14px">
+        生成一条接入命令，复制到节点机执行即可自动安装并注册。
+      </p>
+      <button class="btn-primary" id="btn-gen-token">生成接入 Token</button>
+      <div id="join-result" style="margin-top:14px"></div>
+    </section>
+  </div>
+</main>
+
+<nav class="tabbar">
+  <button class="tab on" data-view="home"><span class="ico">⌂</span>首页</button>
+  <button class="tab" data-view="nodes"><span class="ico">◎</span>节点</button>
+  <button class="tab" data-view="join"><span class="ico">＋</span>接入</button>
+</nav>
+
+<!-- 添加节点弹层 -->
+<div id="add-node-modal" class="modal" style="display:none">
+  <div class="modal-box">
+    <h3>添加节点</h3>
+    <form id="add-node-form">
+      <select name="machine_id" id="an-machine" required><option value="">选择服务器…</option></select>
+      <input name="name" placeholder="节点名称" required>
+      <select name="protocol" id="an-protocol">
+        <option value="trojan">Trojan</option>
+        <option value="vless">VLESS Reality</option>
+        <option value="shadowsocks">Shadowsocks</option>
+        <option value="anytls">AnyTLS</option>
+        <option value="snell">Snell</option>
+      </select>
+      <input name="port" type="number" placeholder="端口" required min="1" max="65535">
+      <input name="sni" placeholder="SNI（trojan/vless/anytls）">
+      <input name="password" placeholder="密码（留空自动生成）">
+      <button type="submit">创建节点</button>
+      <button type="button" class="btn-ghost" onclick="closeModal()">取消</button>
+    </form>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
