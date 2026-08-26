@@ -6,6 +6,9 @@
 package state
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,12 +33,31 @@ func StatePath() string {
 // State 是 Agent 本地状态。
 type State struct {
 	MachineID       string `json:"machine_id"`
-	MachineSecret   string `json:"machine_secret"` // Ed25519 私钥 hex（敏感，0600）
+	MachineSecret   string `json:"machine_secret"` // Ed25519 私钥 hex（敏感，0600，永不上传）
 	ManagerURL      string `json:"manager_url"`
 	EnrollToken     string `json:"-"` // 仅注册期使用，不落盘
 	Sequence        int64  `json:"sequence"`
 	AppliedRevision int64  `json:"applied_revision"`
 	RegisteredAt    int64  `json:"registered_at"`
+}
+
+// GenerateKeypair 在 Agent 本地生成 Ed25519 keypair。
+// 返回公钥 hex 与私钥 hex。私钥只落盘本地，绝不上传。
+func GenerateKeypair() (pubHex, privHex string, err error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", "", fmt.Errorf("生成 Ed25519 keypair 失败: %w", err)
+	}
+	return hex.EncodeToString(pub), hex.EncodeToString(priv), nil
+}
+
+// PrivateKey 返回本地私钥（ed25519.PrivateKey），用于 challenge-response 签名。
+func (s *State) PrivateKey() (ed25519.PrivateKey, error) {
+	raw, err := hex.DecodeString(s.MachineSecret)
+	if err != nil || len(raw) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("本地私钥非法")
+	}
+	return ed25519.PrivateKey(raw), nil
 }
 
 // Load 读取本地状态；不存在返回空 State（首次安装）。

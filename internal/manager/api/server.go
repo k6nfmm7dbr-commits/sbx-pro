@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -39,11 +40,10 @@ type Server struct {
 // New 构造 Server。
 func New(cfg *config.Config, db *db.Manager) *Server {
 	gw := gateway.New(db)
-	gw.OnTrafficDelta = func(td *protocol.TrafficDelta) {
-		// 流量增量入库（防重）。失败仅日志，不影响连接。
-		if _, err := traffic.IngestDelta(db.SQL(), *td); err != nil {
-			slog.Warn("流量增量入库失败", "machine_id", td.MachineID, "seq", td.Sequence, "err", err)
-		}
+	gw.OnTrafficDelta = func(td *protocol.TrafficDelta) error {
+		// 流量增量入库（防重）。重复数据返回 accepted=false 但 err=nil，视为成功。
+		_, err := traffic.IngestDelta(db.SQL(), *td)
+		return err
 	}
 	return &Server{
 		cfg:        cfg,
@@ -247,6 +247,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 enroll_token"})
 		return
 	}
+	if hello.PublicKey == "" {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 public_key（Agent 本地生成的公钥）"})
+		return
+	}
 
 	// 先校验 token（不消费），失败直接拒绝。
 	if _, err := enrollment.Consume(s.db.SQL(), hello.EnrollToken); err != nil {
@@ -254,47 +258,58 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 生成机器身份。
-	id, err := auth.NewIdentity()
+	// 校验公钥格式（32 字节 ed25519 公钥 hex）。
+	if _, err := hex.DecodeString(hello.PublicKey); err != nil || len(mustDecodeHex(hello.PublicKey)) != 32 {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "public_key 非法"})
+		return
+	}
+
+	// 生成机器身份（Manager 只签发 machine_id，不生成/持有私钥）。
+	machineID, err := auth.NewMachineID()
 	if err != nil {
 		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	// 写入机器记录 + 身份 + 消费 token。三件事应原子化；退一步先顺序执行，
-	// 失败则回滚身份（删除 agents 行），避免留脏数据。
+	// 写入机器记录 + 公钥 + 消费 token。三件事应原子化；退一步先顺序执行，
+	// 失败则回滚（删除 machines/agents 行），避免留脏数据。
 	m := &machines.Machine{
-		MachineID:   id.MachineID,
-		Hostname:    hello.Hostname,
-		OS:          hello.OS,
-		Kernel:      hello.Kernel,
-		Arch:        hello.Arch,
+		MachineID:    machineID,
+		Hostname:     hello.Hostname,
+		OS:           hello.OS,
+		Kernel:       hello.Kernel,
+		Arch:         hello.Arch,
 		AgentVersion: hello.AgentVersion,
-		Status:      "offline",
+		Status:       "offline",
 	}
 	if err := machines.Register(s.db.SQL(), m); err != nil {
 		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := auth.StoreIdentity(s.db.SQL(), id); err != nil {
-		_ = machines.Delete(s.db.SQL(), id.MachineID)
+	if err := auth.StoreIdentity(s.db.SQL(), machineID, hello.PublicKey); err != nil {
+		_ = machines.Delete(s.db.SQL(), machineID)
 		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := enrollment.MarkUsed(s.db.SQL(), hello.EnrollToken, id.MachineID); err != nil {
-		_ = machines.Delete(s.db.SQL(), id.MachineID)
+	if err := enrollment.MarkUsed(s.db.SQL(), hello.EnrollToken, machineID); err != nil {
+		_ = machines.Delete(s.db.SQL(), machineID)
 		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
 	ack := protocol.HelloAck{
-		MachineID:     id.MachineID,
-		MachineSecret: id.PrivHex(),
-		Accepted:      true,
+		MachineID: machineID,
+		Accepted:  true,
 	}
 	s.sendJSON(w, http.StatusOK, ack)
-	audit.Log(s.db.SQL(), "agent_register", id.MachineID, "", "ok", clientIP(r))
-	slog.Info("机器注册成功", "machine_id", id.MachineID, "hostname", hello.Hostname)
+	audit.Log(s.db.SQL(), "agent_register", machineID, "", "ok", clientIP(r))
+	slog.Info("机器注册成功", "machine_id", machineID, "hostname", hello.Hostname)
+}
+
+// mustDecodeHex 解码 hex，失败返回空（用于长度校验）。
+func mustDecodeHex(s string) []byte {
+	b, _ := hex.DecodeString(s)
+	return b
 }
 
 // handleEnrollmentToken 管理员生成 enrollment token。

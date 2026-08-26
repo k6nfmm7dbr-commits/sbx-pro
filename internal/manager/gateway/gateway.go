@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/auth"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/db"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
 )
@@ -25,23 +26,34 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	// 允许跨源（部署在独立域名时 Agent 从其它域发起）。生产可收紧。
-	CheckOrigin: func(r *http.Request) bool { return true },
+	// Origin 策略：原生 Agent 通常不带 Origin（空 Origin 允许）；
+	// 拒绝任意第三方浏览器 Origin，防止 CSWSH（跨站 WebSocket 劫持）。
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		return origin == "" || origin == "https://"+r.Host || origin == "http://"+r.Host
+	},
+}
+
+// challengeEntry 是一次待验证的认证挑战。
+type challengeEntry struct {
+	challenge string
+	expires   time.Time
 }
 
 // Gateway 是 Manager 侧 WebSocket 网关。
 type Gateway struct {
 	db *db.Manager
 
-	mu       sync.Mutex
-	conns    map[string]*agentConn // machine_id -> conn
-	lastSeen map[string]time.Time
+	mu         sync.Mutex
+	conns      map[string]*agentConn // machine_id -> conn
+	lastSeen   map[string]time.Time
+	challenges map[string]challengeEntry // machine_id -> 待验证 challenge
 
 	// OnTaskResult 是 task_result 回传回调（由 tasks 模块注入）。
 	OnTaskResult func(*protocol.TaskResult)
 
-	// OnTrafficDelta 是流量增量回调（由 traffic 模块注入）。
-	OnTrafficDelta func(*protocol.TrafficDelta)
+	// OnTrafficDelta 是流量增量回调（由 traffic 模块注入），返回入库错误。
+	OnTrafficDelta func(*protocol.TrafficDelta) error
 }
 
 type agentConn struct {
@@ -54,13 +66,20 @@ type agentConn struct {
 // New 构造 Gateway。
 func New(d *db.Manager) *Gateway {
 	return &Gateway{
-		db:       d,
-		conns:    make(map[string]*agentConn),
-		lastSeen: make(map[string]time.Time),
+		db:         d,
+		conns:      make(map[string]*agentConn),
+		lastSeen:   make(map[string]time.Time),
+		challenges: make(map[string]challengeEntry),
 	}
 }
 
 // HandleWS 处理 /api/agent/ws 的 WebSocket 升级与握手。
+//
+// 认证采用 Ed25519 challenge-response：
+//  1. Agent 发 hello（仅 machine_id）；
+//  2. Manager 回 hello_ack 带一次性 challenge；
+//  3. Agent 用私钥对 challenge 签名，二次发 hello（machine_id + signature + signed_data）；
+//  4. Manager 用公钥验签，通过则进入消息循环。
 func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -68,7 +87,7 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 首帧必须是 hello 认证帧，限时等待。
+	// 第一步：读首个 hello（仅 machine_id），限时。
 	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	_, data, err := conn.ReadMessage()
 	if err != nil {
@@ -81,29 +100,57 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var hello protocol.Hello
-	if err := env.PayloadInto(&hello); err != nil {
+	if err := env.PayloadInto(&hello); err != nil || hello.MachineID == "" {
 		_ = conn.Close()
 		return
 	}
 
-	// 认证：machine_id 存在 + machine_secret 匹配。
-	ack := protocol.HelloAck{Accepted: false}
-	if ok := g.authenticate(hello); !ok {
-		ack.Reason = "认证失败"
-		resp, _ := protocol.New(protocol.MsgHelloAck, env.ID, ack)
-		b, _ := resp.Marshal()
-		_ = conn.WriteMessage(websocket.TextMessage, b)
+	// 生成一次性 challenge 并回给 Agent。
+	challenge, err := auth.NewChallenge()
+	if err != nil {
 		_ = conn.Close()
 		return
 	}
-	ack.MachineID = hello.MachineID
-	ack.Accepted = true
-	resp, _ := protocol.New(protocol.MsgHelloAck, env.ID, ack)
+	g.storeChallenge(hello.MachineID, challenge)
+	ackChallenge, _ := protocol.New(protocol.MsgHelloAck, env.ID, protocol.HelloAck{
+		MachineID: hello.MachineID, Accepted: false, Challenge: challenge, Reason: "challenge",
+	})
+	if b, merr := ackChallenge.Marshal(); merr == nil {
+		_ = conn.WriteMessage(websocket.TextMessage, b)
+	}
+
+	// 第二步：读签名 hello，限时。
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	_, data2, err := conn.ReadMessage()
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	env2, err := protocol.UnmarshalEnvelope(data2)
+	if err != nil || env2.Type != protocol.MsgHello {
+		_ = conn.Close()
+		return
+	}
+	var signedHello protocol.Hello
+	if err := env2.PayloadInto(&signedHello); err != nil {
+		_ = conn.Close()
+		return
+	}
+
+	// 认证：验签。
+	ok, reason := g.authenticate(hello.MachineID, challenge, signedHello)
+	ack := protocol.HelloAck{MachineID: hello.MachineID, Accepted: ok, Reason: reason}
+	resp, _ := protocol.New(protocol.MsgHelloAck, env2.ID, ack)
 	b, _ := resp.Marshal()
 	_ = conn.WriteMessage(websocket.TextMessage, b)
+	if !ok {
+		_ = conn.Close()
+		return
+	}
 
 	// 清除读超时，进入消息循环。
 	_ = conn.SetReadDeadline(time.Time{})
+	g.deleteChallenge(hello.MachineID)
 
 	ac := &agentConn{
 		machineID: hello.MachineID,
@@ -122,6 +169,18 @@ func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	// 读循环。
 	g.readLoop(ac)
+}
+
+func (g *Gateway) storeChallenge(machineID, challenge string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.challenges[machineID] = challengeEntry{challenge: challenge, expires: time.Now().Add(30 * time.Second)}
+}
+
+func (g *Gateway) deleteChallenge(machineID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.challenges, machineID)
 }
 
 func (g *Gateway) register(ac *agentConn) {
@@ -208,6 +267,24 @@ func (g *Gateway) SendToMachine(machineID string, typ, id string, payload any) (
 	}
 }
 
+// sendToConn 向指定连接发送一条消息（串行写队列，非阻塞超时）。
+func (g *Gateway) sendToConn(ac *agentConn, typ string, payload any) error {
+	env, err := protocol.New(typ, "", payload)
+	if err != nil {
+		return err
+	}
+	data, err := env.Marshal()
+	if err != nil {
+		return err
+	}
+	select {
+	case ac.send <- data:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("写队列已满")
+	}
+}
+
 // dispatch 处理 Agent 上报的消息。
 func (g *Gateway) dispatch(ac *agentConn, env *protocol.Envelope) {
 	switch env.Type {
@@ -229,11 +306,16 @@ func (g *Gateway) dispatch(ac *agentConn, env *protocol.Envelope) {
 		}
 
 	case protocol.MsgTrafficDelta:
-		if g.OnTrafficDelta != nil {
-			var td protocol.TrafficDelta
-			if err := env.PayloadInto(&td); err == nil {
-				g.OnTrafficDelta(&td)
+		var td protocol.TrafficDelta
+		if err := env.PayloadInto(&td); err == nil {
+			ack := protocol.TrafficAck{MachineID: td.MachineID, Sequence: td.Sequence, Accepted: true}
+			if g.OnTrafficDelta != nil {
+				if err := g.OnTrafficDelta(&td); err != nil {
+					ack.Accepted = false
+					slog.Warn("流量增量入库失败", "machine_id", td.MachineID, "seq", td.Sequence, "err", err)
+				}
 			}
+			_ = g.sendToConn(ac, protocol.MsgTrafficAck, ack)
 		}
 
 	case protocol.MsgSyncState:
@@ -270,21 +352,37 @@ func (g *Gateway) updateFromHeartbeat(hb protocol.Heartbeat) {
 		hb.MachineID)
 }
 
-// authenticate 校验 machine_id + machine_secret。
-// Phase 3 简化：校验 machine_id 存在且 secret 非空（后续 Phase 用 Ed25519 验签）。
-func (g *Gateway) authenticate(hello protocol.Hello) bool {
-	if hello.MachineID == "" || hello.MachineSecret == "" {
-		return false
+// authenticate 校验 challenge-response：用机器公钥验签 challenge。
+// 要求签名数据（SignedData）与本次 challenge 一致，防止 replay。
+func (g *Gateway) authenticate(machineID, challenge string, signed protocol.Hello) (bool, string) {
+	if signed.MachineID != machineID {
+		return false, "machine_id 不一致"
 	}
-	var exists int
-	err := g.db.SQL().QueryRow(
-		`SELECT COUNT(*) FROM agents WHERE machine_id = ?`, hello.MachineID).Scan(&exists)
-	if err != nil || exists == 0 {
-		return false
+	if signed.SignedData != challenge {
+		return false, "challenge 不匹配"
 	}
-	// machine_secret 是 Ed25519 私钥 hex；公钥存 agents.secret_pub。
-	// Phase 3 先验证 secret 非空且机器存在；严谨验签在后续补充。
-	return true
+	if signed.Signature == "" {
+		return false, "缺少签名"
+	}
+
+	// 校验 challenge 仍有效（一次性，防过期 replay）。
+	g.mu.Lock()
+	ce, ok := g.challenges[machineID]
+	g.mu.Unlock()
+	if !ok || ce.challenge != challenge || time.Now().After(ce.expires) {
+		return false, "challenge 已失效"
+	}
+
+	pub, err := auth.LoadPublicKey(g.db.SQL(), machineID)
+	if err != nil {
+		slog.Warn("认证失败：读取公钥", "machine_id", machineID, "err", err)
+		return false, "机器未登记"
+	}
+	valid, err := auth.VerifyChallenge(pub, challenge, signed.Signature)
+	if err != nil || !valid {
+		return false, "签名校验失败"
+	}
+	return true, ""
 }
 
 var _ = json.Marshal

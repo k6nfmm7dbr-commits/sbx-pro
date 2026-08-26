@@ -9,6 +9,7 @@ const (
 	MsgTaskResult     = "task_result"      // 任务执行结果回传
 	MsgNodeStatus     = "node_status"      // 节点状态上报
 	MsgTrafficDelta   = "traffic_delta"    // 流量增量
+	MsgTrafficAck     = "traffic_ack"      // Manager 确认流量增量已入库（回 ACK）
 	MsgTrafficSnapshot = "traffic_snapshot" // 流量完整快照（重连补传）
 	MsgIPSync         = "ip_sync"          // 在线 IP 快照 / 增量
 	MsgLogEvent       = "log_event"        // 日志事件（脱敏）
@@ -41,7 +42,7 @@ const (
 func IsKnownType(t string) bool {
 	switch t {
 	case MsgHello, MsgHeartbeat, MsgTaskResult, MsgNodeStatus,
-		MsgTrafficDelta, MsgTrafficSnapshot, MsgIPSync, MsgLogEvent, MsgSyncState,
+		MsgTrafficDelta, MsgTrafficAck, MsgTrafficSnapshot, MsgIPSync, MsgLogEvent, MsgSyncState,
 		MsgCreateNode, MsgUpdateNode, MsgDeleteNode, MsgEnableNode, MsgDisableNode,
 		MsgRestartSingbox, MsgSetQuota, MsgResetQuota, MsgSetIPLimit, MsgSyncConfig,
 		MsgRequestStatus, MsgUpdateAgent,

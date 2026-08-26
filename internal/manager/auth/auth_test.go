@@ -2,51 +2,62 @@ package auth
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"testing"
 )
 
-func TestNewIdentity(t *testing.T) {
-	id, err := NewIdentity()
-	if err != nil {
-		t.Fatalf("NewIdentity: %v", err)
+func TestNewMachineID(t *testing.T) {
+	a, err := NewMachineID()
+	if err != nil || a == "" {
+		t.Fatalf("NewMachineID: %v", err)
 	}
-	if id.MachineID == "" {
-		t.Error("machine_id empty")
-	}
-	if len(id.SecretPub) != ed25519.PublicKeySize {
-		t.Errorf("pub key size = %d, want %d", len(id.SecretPub), ed25519.PublicKeySize)
-	}
-	if len(id.SecretPriv) != ed25519.PrivateKeySize {
-		t.Errorf("priv key size = %d, want %d", len(id.SecretPriv), ed25519.PrivateKeySize)
-	}
-	// hex 往返一致。
-	if id.PubHex() == "" || id.PrivHex() == "" {
-		t.Error("hex encoding empty")
-	}
-}
-
-func TestIdentityUniqueness(t *testing.T) {
-	a, _ := NewIdentity()
-	b, _ := NewIdentity()
-	if a.MachineID == b.MachineID {
+	b, _ := NewMachineID()
+	if a == b {
 		t.Error("two machine_id must differ")
 	}
-	if string(a.SecretPriv) == string(b.SecretPriv) {
-		t.Error("two keypairs must differ")
+}
+
+func TestChallengeRoundTrip(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	ch, err := NewChallenge()
+	if err != nil || len(ch) != 64 {
+		t.Fatalf("NewChallenge: %v (len=%d)", err, len(ch))
+	}
+
+	sig, err := SignChallenge(priv, ch)
+	if err != nil {
+		t.Fatalf("SignChallenge: %v", err)
+	}
+	ok, err := VerifyChallenge(pub, ch, sig)
+	if err != nil || !ok {
+		t.Fatalf("VerifyChallenge valid sig: ok=%v err=%v", ok, err)
+	}
+
+	// 篡改 challenge 必须失败。
+	badCh, _ := NewChallenge()
+	ok, _ = VerifyChallenge(pub, badCh, sig)
+	if ok {
+		t.Error("tampered challenge accepted")
+	}
+
+	// 错误签名必须失败。
+	_, priv2, _ := ed25519.GenerateKey(rand.Reader)
+	badSig, _ := SignChallenge(priv2, ch)
+	ok, _ = VerifyChallenge(pub, ch, badSig)
+	if ok {
+		t.Error("wrong-key signature accepted")
 	}
 }
 
-func TestVerifySecret(t *testing.T) {
-	id, _ := NewIdentity()
-	msg := []byte("hello")
-	sig := ed25519.Sign(id.SecretPriv, msg)
-	if !VerifySecret(id.SecretPub, msg, sig) {
-		t.Error("valid signature rejected")
+func TestPublicKeyValidation(t *testing.T) {
+	// 公钥必须是 32 字节 hex；StoreIdentity 内部会拒绝非法公钥。
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	good := hex.EncodeToString(pub)
+	if len(good) != ed25519.PublicKeySize*2 {
+		t.Errorf("pub hex length = %d", len(good))
 	}
-	if VerifySecret(id.SecretPub, msg, []byte("bad")) {
-		t.Error("invalid signature accepted")
-	}
-	if VerifySecret(id.SecretPub, []byte("tampered"), sig) {
-		t.Error("tampered message accepted")
+	if _, err := hex.DecodeString("zz"); err == nil {
+		t.Error("invalid hex should fail decode")
 	}
 }

@@ -7,6 +7,8 @@ package client
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -21,11 +23,12 @@ import (
 type RunConfig struct {
 	ManagerURL    string
 	MachineID     string
-	MachineSecret string
+	MachineSecret string // Ed25519 私钥 hex（本地签名用，永不上传）
 	HeartbeatSec  int
 	HeartbeatFunc func() protocol.Heartbeat
 	OnTask        func(ac *AgentConn, env *protocol.Envelope) // Phase 4 任务回调
 	OnConnect     func(ac *AgentConn)                         // 认证成功后的回调（启动子服务）
+	OnTrafficAck  func(ack protocol.TrafficAck)               // 流量入库确认回调
 }
 
 // Run 建立 WebSocket 连接并持续运行（阻塞），断线自动重连。
@@ -74,29 +77,10 @@ func runOnce(ctx context.Context, cfg RunConfig) error {
 	ac := &AgentConn{conn: conn}
 	defer conn.Close()
 
-	// 发送 hello 认证帧。
-	hello := protocol.Hello{
-		MachineID:     cfg.MachineID,
-		MachineSecret: cfg.MachineSecret,
-	}
-	if err := ac.send(protocol.MsgHello, "", hello); err != nil {
+	// 认证（Ed25519 challenge-response）。
+	if err := authenticate(ac, cfg); err != nil {
 		return err
 	}
-
-	// 读 hello_ack。
-	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	env, err := ac.read()
-	if err != nil {
-		return fmt.Errorf("等待认证应答失败: %w", err)
-	}
-	if env.Type != protocol.MsgHelloAck {
-		return fmt.Errorf("期望 hello_ack，收到 %s", env.Type)
-	}
-	var ack protocol.HelloAck
-	if err := env.PayloadInto(&ack); err != nil || !ack.Accepted {
-		return fmt.Errorf("认证被拒绝: %s", ack.Reason)
-	}
-	_ = conn.SetReadDeadline(time.Time{})
 	slog.Info("已连接 Manager 并通过认证", "machine_id", cfg.MachineID)
 
 	// 认证成功回调（启动流量同步等子服务）。
@@ -137,8 +121,15 @@ func runOnce(ctx context.Context, cfg RunConfig) error {
 			if e == nil {
 				continue
 			}
-			if cfg.OnTask != nil && protocol.IsTaskType(e.Type) {
-				go cfg.OnTask(ac, e)
+			if protocol.IsTaskType(e.Type) {
+				if cfg.OnTask != nil {
+					go cfg.OnTask(ac, e)
+				}
+			} else if e.Type == protocol.MsgTrafficAck {
+				var ack protocol.TrafficAck
+				if err := e.PayloadInto(&ack); err == nil && cfg.OnTrafficAck != nil {
+					cfg.OnTrafficAck(ack)
+				}
 			}
 		case rerr := <-readErr:
 			return rerr
@@ -199,4 +190,86 @@ func wsURL(managerURL string) string {
 	}
 	u.Path = "/api/agent/ws"
 	return u.String()
+}
+
+// authenticate 执行 challenge-response 认证：
+//  1. 发只含 machine_id 的 hello；
+//  2. 收 challenge；
+//  3. 用本地私钥签名后二次发 hello；
+//  4. 收最终认证结果。
+func authenticate(ac *AgentConn, cfg RunConfig) error {
+	conn := ac.conn
+
+	// 第一步：发只含 machine_id 的 hello。
+	if err := ac.send(protocol.MsgHello, "", protocol.Hello{MachineID: cfg.MachineID}); err != nil {
+		return err
+	}
+
+	// 读 challenge。
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	env, err := ac.read()
+	if err != nil {
+		return fmt.Errorf("等待 challenge 失败: %w", err)
+	}
+	if env.Type != protocol.MsgHelloAck {
+		return fmt.Errorf("期望 hello_ack，收到 %s", env.Type)
+	}
+	var challengeAck protocol.HelloAck
+	if err := env.PayloadInto(&challengeAck); err != nil {
+		return fmt.Errorf("解析 challenge 失败: %w", err)
+	}
+	if challengeAck.Challenge == "" {
+		return fmt.Errorf("认证被拒绝: %s", challengeAck.Reason)
+	}
+
+	// 用私钥签名 challenge。
+	priv, err := parsePrivateKey(cfg.MachineSecret)
+	if err != nil {
+		return err
+	}
+	sig, err := signChallenge(priv, challengeAck.Challenge)
+	if err != nil {
+		return err
+	}
+
+	// 第二步：发签名 hello。
+	if err := ac.send(protocol.MsgHello, "", protocol.Hello{
+		MachineID:  cfg.MachineID,
+		Signature:  sig,
+		SignedData: challengeAck.Challenge,
+	}); err != nil {
+		return err
+	}
+
+	// 读最终认证结果。
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	env2, err := ac.read()
+	if err != nil {
+		return fmt.Errorf("等待认证结果失败: %w", err)
+	}
+	if env2.Type != protocol.MsgHelloAck {
+		return fmt.Errorf("期望 hello_ack，收到 %s", env2.Type)
+	}
+	var ack protocol.HelloAck
+	if err := env2.PayloadInto(&ack); err != nil || !ack.Accepted {
+		return fmt.Errorf("认证被拒绝: %s", ack.Reason)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	return nil
+}
+
+func parsePrivateKey(hexStr string) (ed25519.PrivateKey, error) {
+	raw, err := hex.DecodeString(hexStr)
+	if err != nil || len(raw) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("本地私钥非法")
+	}
+	return ed25519.PrivateKey(raw), nil
+}
+
+func signChallenge(priv ed25519.PrivateKey, challenge string) (string, error) {
+	data, err := hex.DecodeString(challenge)
+	if err != nil {
+		return "", fmt.Errorf("challenge 非法: %w", err)
+	}
+	return hex.EncodeToString(ed25519.Sign(priv, data)), nil
 }

@@ -1,11 +1,11 @@
-// Package auth 实现机器身份签发与认证（开发提示词第七节）。
+// Package auth 实现机器身份签发与认证（开发提示词第七节 / 11.6）。
 //
-// 注册成功后 Manager 为 Agent 签发独立机器身份：
-//   - machine_id = UUID v4（不依赖 IP，避免 NAT/VPS 换 IP）；
-//   - Ed25519 keypair：私钥下发 Agent（长期认证凭据），公钥存 Manager。
+// 安全模型（Ed25519 challenge-response）：
+//   - Agent 本地生成 Ed25519 keypair（private key 只在 Agent，0600 落盘，绝不上传）；
+//   - 注册时 Agent 把公钥发给 Manager，Manager 只存公钥；
+//   - 连接认证时 Manager 发一次性 challenge，Agent 用私钥签名，Manager 用公钥验签。
 //
-// Agent 后续用私钥对连接认证：WebSocket 握手携带 machine_id + 用私钥签名，
-// Manager 用公钥验签（Phase 3 实现）。本阶段提供 keypair 生成与 UUID 生成。
+// machine_id 由 Manager 签发（UUID v4，不依赖 IP，避免 NAT/VPS 换 IP 后身份漂移）。
 package auth
 
 import (
@@ -13,54 +13,85 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
 )
 
-// Identity 是签发给一台机器的身份。
-type Identity struct {
-	MachineID    string // UUID
-	SecretPub    ed25519.PublicKey
-	SecretPriv   ed25519.PrivateKey
-}
+// ErrNoPublicKey 表示该机器未登记公钥。
+var ErrNoPublicKey = errors.New("机器未登记公钥")
 
-// NewIdentity 生成全新机器身份（UUID + Ed25519 keypair）。
-func NewIdentity() (*Identity, error) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("生成 Ed25519 keypair 失败: %w", err)
-	}
+// NewMachineID 生成一个全新 machine_id（UUID v4）。
+func NewMachineID() (string, error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
-		return nil, fmt.Errorf("生成 machine_id 失败: %w", err)
+		return "", fmt.Errorf("生成 machine_id 失败: %w", err)
 	}
-	return &Identity{
-		MachineID:  id.String(),
-		SecretPub:  pub,
-		SecretPriv: priv,
-	}, nil
+	return id.String(), nil
 }
 
-// PrivHex 返回私钥的 hex 编码（下发 Agent，Agent 存本地）。
-func (i *Identity) PrivHex() string { return hex.EncodeToString(i.SecretPriv) }
-
-// PubHex 返回公钥的 hex 编码（存 Manager agents.secret_pub）。
-func (i *Identity) PubHex() string { return hex.EncodeToString(i.SecretPub) }
-
-// StoreIdentity 将机器身份写入 Manager 数据库。
-func StoreIdentity(db *sql.DB, id *Identity) error {
-	_, err := db.Exec(
+// StoreIdentity 将机器公钥写入 Manager 数据库。
+// 公钥为 hex 编码的 ed25519.PublicKey（32 字节）。
+func StoreIdentity(db *sql.DB, machineID, pubHex string) error {
+	pub, err := hex.DecodeString(pubHex)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("公钥非法: %w", err)
+	}
+	_, err = db.Exec(
 		`INSERT INTO agents (machine_id, secret_pub, salt, created_at)
 		 VALUES (?, ?, '', strftime('%s','now'))`,
-		id.MachineID, id.SecretPub)
+		machineID, pub)
 	if err != nil {
 		return fmt.Errorf("写入机器身份失败: %w", err)
 	}
 	return nil
 }
 
-// VerifySecret 用存储的公钥验签（Phase 3 使用）。此处提供基础能力。
-func VerifySecret(pub ed25519.PublicKey, msg, sig []byte) bool {
-	return ed25519.Verify(pub, msg, sig)
+// LoadPublicKey 读取机器公钥（返回 ed25519.PublicKey，机器不存在或未登记返回 ErrNoPublicKey）。
+func LoadPublicKey(db *sql.DB, machineID string) (ed25519.PublicKey, error) {
+	var pub []byte
+	err := db.QueryRow(`SELECT secret_pub FROM agents WHERE machine_id = ?`, machineID).Scan(&pub)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNoPublicKey
+		}
+		return nil, fmt.Errorf("读取机器公钥失败: %w", err)
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		return nil, ErrNoPublicKey
+	}
+	return ed25519.PublicKey(pub), nil
+}
+
+// NewChallenge 生成一次性随机 challenge（32 字节 hex，64 字符）。
+func NewChallenge() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("生成 challenge 失败: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// SignChallenge 用私钥对 challenge 签名（Agent 侧使用）。
+func SignChallenge(priv ed25519.PrivateKey, challenge string) (string, error) {
+	data, err := hex.DecodeString(challenge)
+	if err != nil {
+		return "", fmt.Errorf("challenge 非法: %w", err)
+	}
+	sig := ed25519.Sign(priv, data)
+	return hex.EncodeToString(sig), nil
+}
+
+// VerifyChallenge 用公钥验签 challenge 签名（Manager 侧使用）。
+func VerifyChallenge(pub ed25519.PublicKey, challenge, sigHex string) (bool, error) {
+	data, err := hex.DecodeString(challenge)
+	if err != nil {
+		return false, fmt.Errorf("challenge 非法: %w", err)
+	}
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return false, fmt.Errorf("签名非法: %w", err)
+	}
+	return ed25519.Verify(pub, data, sig), nil
 }

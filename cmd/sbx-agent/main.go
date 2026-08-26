@@ -88,8 +88,16 @@ func runEnroll(args []string) int {
 	}
 
 	info := sysinfo.Gather()
+
+	// Agent 本地生成 Ed25519 keypair：公钥上传注册，私钥只落盘本地。
+	pubHex, privHex, err := state.GenerateKeypair()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[sbx-agent] 生成身份失败:", err)
+		return 1
+	}
 	hello := protocol.Hello{
 		EnrollToken:  *token,
+		PublicKey:    pubHex,
 		Hostname:     info.Hostname,
 		AgentVersion: version.Version,
 		OS:           info.OS,
@@ -104,10 +112,10 @@ func runEnroll(args []string) int {
 		return 1
 	}
 
-	// 保存身份到本地（私钥 0600 落盘）。
+	// 保存身份到本地（私钥 0600 落盘，绝不上传）。
 	st := &state.State{
 		MachineID:     ack.MachineID,
-		MachineSecret: ack.MachineSecret,
+		MachineSecret: privHex,
 		ManagerURL:    *url,
 	}
 	if err := st.Save(); err != nil {
@@ -240,6 +248,9 @@ func runAgent(args []string) int {
 		OnTask: func(ac *client.AgentConn, env *protocol.Envelope) {
 			res := exec.Handle(env)
 			_ = ac.Send(protocol.MsgTaskResult, env.ID, res)
+		},
+		OnTrafficAck: func(ack protocol.TrafficAck) {
+			traf.OnAck(ack)
 		},
 		OnConnect: func(ac *client.AgentConn) {
 			// 连接建立后启动流量同步循环。
