@@ -177,15 +177,51 @@ install_sing_box() {
   ok "sing-box 安装完成"
 }
 
+# ---------- 卸载 ----------
+uninstall() {
+  info "卸载 sbx-pro ..."
+
+  # 1. 停服务并禁用自启
+  if command -v systemctl >/dev/null; then
+    systemctl stop sbx-agent sing-box sbx-manager 2>/dev/null
+    systemctl disable sbx-agent sing-box sbx-manager 2>/dev/null
+    rm -f /etc/systemd/system/sbx-agent.service
+    rm -f /etc/systemd/system/sing-box.service
+    rm -f /etc/systemd/system/sbx-manager.service
+    systemctl daemon-reload
+  fi
+
+  # 2. 停残留进程
+  pkill -f 'sbx-agent run' 2>/dev/null || true
+  pkill -f 'sbx-manager serve' 2>/dev/null || true
+
+  # 3. 删除二进制
+  rm -f "$BIN_DIR/sbx-agent" "$BIN_DIR/sbx-manager" "$BIN_DIR/sing-box"
+
+  # 4. 删除数据目录
+  rm -rf /etc/sbx-agent /etc/sbx /etc/sing-box /etc/sbx-pro
+
+  # 5. 清理 nftables 规则
+  if command -v nft >/dev/null; then
+    nft delete table inet sbx_traffic 2>/dev/null || true
+    nft delete table inet sbx_quota   2>/dev/null || true
+    nft delete table inet sbx_iplimit 2>/dev/null || true
+  fi
+
+  ok "已卸载。若该机器此前接入过面板，请在面板侧删除对应机器记录。"
+}
+
 # ---------- 入口 ----------
 case "${1:-}" in
   manager) install_manager ;;
   agent) shift; install_agent "$@" ;;
+  uninstall) uninstall ;;
   version|--version|-v)
     curl -fLSs "$RAW_BASE/SHA256SUMS" | head -5 ;;
   *) 
     echo "SBX Pro 一键安装"
     echo "  装面板: bash <(curl -fLSs $RAW_URL) manager"
     echo "  装节点: bash <(curl -fLSs $RAW_URL) agent -t TOKEN -u https://panel.example.com"
+    echo "  卸载:   bash <(curl -fLSs $RAW_URL) uninstall"
     exit 2 ;;
 esac
