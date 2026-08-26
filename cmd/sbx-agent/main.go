@@ -21,6 +21,7 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/executor"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/handlers"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/heartbeat"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/iplimit"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/nodesvc"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/quota"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/state"
@@ -158,7 +159,8 @@ func runAgent(args []string) int {
 	defer trafficDB.Close()
 
 	qs := quota.New(agentDB.DB, nodesvc.DefaultAppDir())
-	handlers.Register(exec, svc, qs)
+	ils := iplimit.New(agentDB.DB)
+	handlers.Register(exec, svc, qs, ils)
 
 	// quota enforcement（本机限额阻断，周期性检查）。
 	enforcer := &quota.Enforcer{
@@ -182,6 +184,34 @@ func runAgent(args []string) int {
 		},
 	}
 	enforcer.Run(ctx, 30*time.Second)
+
+	// IP limit enforcement（同时在线 IP 限制）。
+	ipEnforcer := &iplimit.Enforcer{
+		State: ils,
+		PortOf: func(nodeID string) (int, error) {
+			for _, n := range svc.List() {
+				if nodes.IDString(n) == nodeID {
+					return strconv.Atoi(nodes.Str(n, "port"))
+				}
+			}
+			return 0, fmt.Errorf("节点 %s 不存在", nodeID)
+		},
+		ActiveIPs: iplimit.DefaultActiveIPs,
+	}
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := ipEnforcer.Check(); err != nil {
+					slog.Warn("IP limit 检查失败", "err", err)
+				}
+			}
+		}
+	}()
 	tcfg := &config.Config{
 		DB:        filepath.Join(nodesvc.DefaultAppDir(), "traffic.db"),
 		NodesFile: filepath.Join(nodesvc.DefaultAppDir(), "nodes.json"),

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/executor"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/iplimit"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/nodesvc"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/quota"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/nodes"
@@ -38,8 +39,8 @@ func applyNode(svc *nodesvc.Service) (string, error) {
 
 // Register 注册所有任务处理器到 executor。
 // svc 是 Agent 节点服务（管理 sing-box + nodes.json）。
-// qs 是 quota 状态（可为 nil，则跳过 quota 相关处理器注册）。
-func Register(e *executor.Executor, svc *nodesvc.Service, qs *quota.State) {
+// qs 是 quota 状态，ils 是 IP limit 状态（可为 nil，则跳过对应处理器）。
+func Register(e *executor.Executor, svc *nodesvc.Service, qs *quota.State, ils *iplimit.State) {
 	// request_status：返回 Agent 状态（基础可用性探测）。
 	e.Register(protocol.MsgRequestStatus, func(db *sql.DB, payload json.RawMessage) (string, error) {
 		return "ok", nil
@@ -147,6 +148,26 @@ func Register(e *executor.Executor, svc *nodesvc.Service, qs *quota.State) {
 				return "", err
 			}
 			return "quota_reset", nil
+		})
+	}
+
+	// set_ip_limit：设置节点同时在线 IP 限制。
+	if ils != nil {
+		e.Register(protocol.MsgSetIPLimit, func(db *sql.DB, payload json.RawMessage) (string, error) {
+			var req struct {
+				NodeID string `json:"node_id"`
+				Limit  int    `json:"ip_limit"`
+			}
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return "", fmt.Errorf("ip_limit 定义解析失败: %w", err)
+			}
+			if req.NodeID == "" {
+				return "", fmt.Errorf("缺少 node_id")
+			}
+			if err := ils.SetLimit(req.NodeID, req.Limit); err != nil {
+				return "", err
+			}
+			return "ip_limit_set", nil
 		})
 	}
 }
