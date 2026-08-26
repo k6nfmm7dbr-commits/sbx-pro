@@ -223,6 +223,9 @@ func (s *Server) handleWeb(w http.ResponseWriter, r *http.Request, route string)
 		s.serveAsset(w, r, "style.css", "text/css; charset=utf-8")
 	case route == "/extra.css":
 		s.serveAsset(w, r, "extra.css", "text/css; charset=utf-8")
+	case route == "/favicon.ico":
+		// 浏览器后台请求的图标：返回 204 避免 404 JSON 噪音。
+		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
