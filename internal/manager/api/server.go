@@ -19,6 +19,7 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/enrollment"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/gateway"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/machines"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/nodes"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/tasks"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
 )
@@ -116,6 +117,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case route == "/api/tasks" && r.Method == http.MethodGet:
 		s.handleListTasks(w, r)
+
+	case route == "/api/nodes" && r.Method == http.MethodGet:
+		s.handleListNodes(w, r)
+
+	case route == "/api/nodes" && r.Method == http.MethodPost:
+		s.handleCreateNode(w, r)
+
+	case strings.HasPrefix(route, "/api/nodes/") && strings.HasSuffix(route, "/share") &&
+		r.Method == http.MethodGet:
+		s.handleNodeShare(w, r, route)
 
 	default:
 		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -275,7 +286,110 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.sendJSON(w, http.StatusOK, map[string]any{"tasks": list})
 }
 
+// handleListNodes 列出全局节点（脱敏 Public DTO）。
+func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		s.sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	list, err := nodes.List(s.db.SQL())
+	if err != nil {
+		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if list == nil {
+		list = []nodes.PublicNode{}
+	}
+	s.sendJSON(w, http.StatusOK, map[string]any{"nodes": list})
+}
+
+// handleCreateNode 创建节点：Manager 记录 + 生成节点凭据 + 下发 create_node 任务。
+func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		s.sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	var req struct {
+		MachineID string          `json:"machine_id"`
+		Name      string          `json:"name"`
+		Protocol  string          `json:"protocol"`
+		Port      int             `json:"port"`
+		Config    json.RawMessage `json:"config"` // 协议字段（sni/uuid/password/...）
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+		return
+	}
+	if req.MachineID == "" || req.Protocol == "" || req.Port < 1 || req.Port > 65535 {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "machine_id/protocol/port 必填且端口合法"})
+		return
+	}
+
+	// 生成节点凭据（占位：Phase 5 实际用 sing-box generate / crypto/rand）。
+	cfg := map[string]any{}
+	if len(req.Config) > 0 {
+		_ = json.Unmarshal(req.Config, &cfg)
+	}
+	cfg["type"] = req.Protocol
+	cfg["port"] = req.Port
+
+	// Manager 记录节点。
+	n, err := nodes.Create(s.db.SQL(), req.MachineID, req.Name, req.Protocol, req.Port, cfg)
+	if err != nil {
+		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// 下发 create_node 任务（payload 含节点定义 + node_uuid）。
+	payload := map[string]any{
+		"node_uuid": n.NodeUUID,
+		"name":      req.Name,
+		"type":      req.Protocol,
+		"port":      req.Port,
+	}
+	for k, v := range cfg {
+		payload[k] = v
+	}
+	taskID, err := s.dispatcher.Dispatch(req.MachineID, n.NodeUUID, protocol.MsgCreateNode, payload)
+	if err != nil {
+		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.sendJSON(w, http.StatusOK, map[string]any{
+		"node_uuid": n.NodeUUID,
+		"task_id":   taskID,
+	})
+}
+
+// handleNodeShare 返回节点分享链接（敏感接口，需登录）。
+func (s *Server) handleNodeShare(w http.ResponseWriter, r *http.Request, route string) {
+	if !s.authorized(r) {
+		s.sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	nodeUUID := strings.TrimSuffix(strings.TrimPrefix(route, "/api/nodes/"), "/share")
+	n, err := nodes.Get(s.db.SQL(), nodeUUID)
+	if err != nil {
+		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "节点不存在"})
+		return
+	}
+	// 分享链接由 Agent 生成（依赖本机 host 等），Phase 5 先返回节点敏感凭据 JSON。
+	var cfg map[string]any
+	_ = json.Unmarshal([]byte(n.Config), &cfg)
+	s.sendJSON(w, http.StatusOK, map[string]any{
+		"node_uuid": n.NodeUUID,
+		"config":    cfg,
+	})
+}
+
 // authorized 管理员鉴权：Bearer token（Phase 2 简化为常量时间比较）。
+
 func (s *Server) authorized(r *http.Request) bool {
 	token := s.cfg.AdminToken
 	if token == "" {

@@ -5,8 +5,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -17,7 +15,9 @@ import (
 
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/client"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/executor"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/handlers"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/heartbeat"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/nodesvc"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/state"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/sysinfo"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/database"
@@ -124,7 +124,8 @@ func runAgent(args []string) int {
 	defer agentDB.Close()
 
 	exec := executor.New(agentDB.DB)
-	registerHandlers(exec)
+	svc := nodesvc.New("") // 节点数据目录默认 /etc/sbx，可用 SBX_DIR 覆盖
+	handlers.Register(exec, svc)
 
 	cfg := client.RunConfig{
 		ManagerURL:    st.ManagerURL,
@@ -150,20 +151,6 @@ func runAgent(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-// registerHandlers 注册 Agent 任务处理器的白名单（Phase 4 基础类型）。
-// Phase 5 起补充 create_node/update_node/... 等节点任务。
-func registerHandlers(exec *executor.Executor) {
-	exec.Register(protocol.MsgRequestStatus, func(db *sql.DB, payload json.RawMessage) (string, error) {
-		return "ok", nil
-	})
-	exec.Register(protocol.MsgRestartSingbox, func(db *sql.DB, payload json.RawMessage) (string, error) {
-		return "ok(待实现)", nil
-	})
-	exec.Register(protocol.MsgSyncConfig, func(db *sql.DB, payload json.RawMessage) (string, error) {
-		return "synced", nil
-	})
 }
 
 func usage() {
