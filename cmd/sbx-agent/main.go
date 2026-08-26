@@ -5,12 +5,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/handlers"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/heartbeat"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/nodesvc"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/quota"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/state"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/sysinfo"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/trafsync"
@@ -145,7 +148,6 @@ func runAgent(args []string) int {
 
 	exec := executor.New(agentDB.DB)
 	svc := nodesvc.New("") // 节点数据目录默认 /etc/sbx，可用 SBX_DIR 覆盖
-	handlers.Register(exec, svc)
 
 	// 流量采集 + 同步（复用原 sbx 采集器 + nft 计数）。
 	trafficDB, err := database.Open(filepath.Join(nodesvc.DefaultAppDir(), "traffic.db"))
@@ -154,6 +156,32 @@ func runAgent(args []string) int {
 		return 1
 	}
 	defer trafficDB.Close()
+
+	qs := quota.New(agentDB.DB, nodesvc.DefaultAppDir())
+	handlers.Register(exec, svc, qs)
+
+	// quota enforcement（本机限额阻断，周期性检查）。
+	enforcer := &quota.Enforcer{
+		State: qs,
+		Used: func(nodeID string) (int64, error) {
+			var rx, tx int64
+			err := trafficDB.DB.QueryRowContext(ctx,
+				`SELECT rx, tx FROM totals WHERE scope = ?`, "node:"+nodeID).Scan(&rx, &tx)
+			if err == sql.ErrNoRows {
+				return 0, nil
+			}
+			return rx + tx, err
+		},
+		Port: func(nodeID string) (int, error) {
+			for _, n := range svc.List() {
+				if nodes.IDString(n) == nodeID {
+					return strconv.Atoi(nodes.Str(n, "port"))
+				}
+			}
+			return 0, fmt.Errorf("节点 %s 不存在", nodeID)
+		},
+	}
+	enforcer.Run(ctx, 30*time.Second)
 	tcfg := &config.Config{
 		DB:        filepath.Join(nodesvc.DefaultAppDir(), "traffic.db"),
 		NodesFile: filepath.Join(nodesvc.DefaultAppDir(), "nodes.json"),
