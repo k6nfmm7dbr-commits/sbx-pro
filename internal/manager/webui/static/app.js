@@ -86,7 +86,7 @@
 
   // ===== 渲染：机器 =====
   function renderMachines() {
-    api('/api/machines').then(function (d) {
+    return api('/api/machines').then(function (d) {
       machines = d.machines || [];
       $('#kpi-machines').textContent = machines.length;
       $('#kpi-machine-count').textContent = machines.length;
@@ -119,7 +119,7 @@
       $('#home-machine-list').innerHTML = html;
       $('#machine-empty').style.display = machines.length ? 'none' : 'block';
       $('#home-machine-empty').style.display = machines.length ? 'none' : 'block';
-    }).catch(function (e) { throw e; });
+    });
   }
 
   // ===== 渲染：节点 =====
