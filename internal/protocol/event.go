@@ -57,7 +57,7 @@ func IsTaskType(t string) bool {
 	switch t {
 	case MsgCreateNode, MsgUpdateNode, MsgDeleteNode, MsgEnableNode, MsgDisableNode,
 		MsgRestartSingbox, MsgSetQuota, MsgResetQuota, MsgSetIPLimit, MsgSyncConfig,
-		MsgUpdateAgent:
+		MsgRequestStatus, MsgUpdateAgent:
 		return true
 	}
 	return false

@@ -5,17 +5,22 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/client"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/executor"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/heartbeat"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/state"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/sysinfo"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/database"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/version"
 )
@@ -110,6 +115,17 @@ func runAgent(args []string) int {
 	hb := heartbeat.New()
 	info := sysinfo.Gather()
 
+	// 打开 Agent 本地数据库（身份/task 幂等/traffic/quota 等）。
+	agentDB, err := database.Open(filepath.Join(state.AppDir(), "agent.db"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[sbx-agent] 打开本地数据库失败:", err)
+		return 1
+	}
+	defer agentDB.Close()
+
+	exec := executor.New(agentDB.DB)
+	registerHandlers(exec)
+
 	cfg := client.RunConfig{
 		ManagerURL:    st.ManagerURL,
 		MachineID:     st.MachineID,
@@ -122,6 +138,10 @@ func runAgent(args []string) int {
 			h.AppliedRevision = st.AppliedRevision
 			return h
 		},
+		OnTask: func(ac *client.AgentConn, env *protocol.Envelope) {
+			res := exec.Handle(env)
+			_ = ac.Send(protocol.MsgTaskResult, env.ID, res)
+		},
 	}
 
 	slog.Info("sbx-agent 启动，连接 Manager", "manager", st.ManagerURL, "machine_id", st.MachineID)
@@ -130,6 +150,20 @@ func runAgent(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// registerHandlers 注册 Agent 任务处理器的白名单（Phase 4 基础类型）。
+// Phase 5 起补充 create_node/update_node/... 等节点任务。
+func registerHandlers(exec *executor.Executor) {
+	exec.Register(protocol.MsgRequestStatus, func(db *sql.DB, payload json.RawMessage) (string, error) {
+		return "ok", nil
+	})
+	exec.Register(protocol.MsgRestartSingbox, func(db *sql.DB, payload json.RawMessage) (string, error) {
+		return "ok(待实现)", nil
+	})
+	exec.Register(protocol.MsgSyncConfig, func(db *sql.DB, payload json.RawMessage) (string, error) {
+		return "synced", nil
+	})
 }
 
 func usage() {

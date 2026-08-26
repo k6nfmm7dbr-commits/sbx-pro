@@ -19,24 +19,34 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/enrollment"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/gateway"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/machines"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/tasks"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
 )
 
 // Server 持有 Manager HTTP 服务依赖。
 type Server struct {
-	cfg     *config.Config
-	db      *db.Manager
-	gateway *gateway.Gateway
+	cfg        *config.Config
+	db         *db.Manager
+	gateway    *gateway.Gateway
+	dispatcher *tasks.Dispatcher
 }
 
 // New 构造 Server。
 func New(cfg *config.Config, db *db.Manager) *Server {
+	gw := gateway.New(db)
 	return &Server{
-		cfg:     cfg,
-		db:      db,
-		gateway: gateway.New(db),
+		cfg:        cfg,
+		db:         db,
+		gateway:    gw,
+		dispatcher: tasks.NewDispatcher(db.SQL(), gw, 60*time.Second),
 	}
 }
+
+// Gateway 暴露 gateway（供 service 层注入 sweeper/task 相关）。
+func (s *Server) Gateway() *gateway.Gateway { return s.gateway }
+
+// Dispatcher 暴露任务分发器（供 CLI/测试下发任务）。
+func (s *Server) Dispatcher() *tasks.Dispatcher { return s.dispatcher }
 
 // NewHTTPServer 构造配置好超时的 *http.Server（不启动监听）。
 func (s *Server) NewHTTPServer() *http.Server {
@@ -100,6 +110,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case route == "/api/machines" && r.Method == http.MethodGet:
 		s.handleMachines(w, r)
+
+	case route == "/api/tasks" && r.Method == http.MethodPost:
+		s.handleDispatchTask(w, r)
+
+	case route == "/api/tasks" && r.Method == http.MethodGet:
+		s.handleListTasks(w, r)
 
 	default:
 		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -204,6 +220,59 @@ func (s *Server) handleMachines(w http.ResponseWriter, r *http.Request) {
 		list = []machines.Machine{}
 	}
 	s.sendJSON(w, http.StatusOK, map[string]any{"machines": list})
+}
+
+// handleDispatchTask 管理员下发任务（测试/WebUI 用）。
+// 请求体: {"machine_id":"...","type":"request_status","node_uuid":"","payload":{...}}
+func (s *Server) handleDispatchTask(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		s.sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	var req struct {
+		MachineID string          `json:"machine_id"`
+		NodeUUID  string          `json:"node_uuid"`
+		Type      string          `json:"type"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body: " + err.Error()})
+		return
+	}
+	if req.MachineID == "" || req.Type == "" {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "machine_id/type 必填"})
+		return
+	}
+	taskID, err := s.dispatcher.Dispatch(req.MachineID, req.NodeUUID, req.Type, req.Payload)
+	if err != nil {
+		s.sendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.sendJSON(w, http.StatusOK, map[string]string{"task_id": taskID})
+}
+
+// handleListTasks 管理员查看任务列表。
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		s.sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	status := r.URL.Query().Get("status")
+	machine := r.URL.Query().Get("machine_id")
+	list, err := tasks.List(s.db.SQL(), status, machine)
+	if err != nil {
+		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if list == nil {
+		list = []tasks.Task{}
+	}
+	s.sendJSON(w, http.StatusOK, map[string]any{"tasks": list})
 }
 
 // authorized 管理员鉴权：Bearer token（Phase 2 简化为常量时间比较）。

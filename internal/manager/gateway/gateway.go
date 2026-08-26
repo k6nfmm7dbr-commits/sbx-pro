@@ -10,6 +10,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -35,6 +36,9 @@ type Gateway struct {
 	mu       sync.Mutex
 	conns    map[string]*agentConn // machine_id -> conn
 	lastSeen map[string]time.Time
+
+	// OnTaskResult 是 task_result 回传回调（由 tasks 模块注入）。
+	OnTaskResult func(*protocol.TaskResult)
 }
 
 type agentConn struct {
@@ -177,6 +181,30 @@ func (g *Gateway) readLoop(ac *agentConn) {
 	}
 }
 
+// SendToMachine 向指定机器发送一条消息（串行写）。返回机器是否在线。
+func (g *Gateway) SendToMachine(machineID string, typ, id string, payload any) (bool, error) {
+	g.mu.Lock()
+	ac, ok := g.conns[machineID]
+	g.mu.Unlock()
+	if !ok {
+		return false, nil
+	}
+	env, err := protocol.New(typ, id, payload)
+	if err != nil {
+		return false, err
+	}
+	data, err := env.Marshal()
+	if err != nil {
+		return false, err
+	}
+	select {
+	case ac.send <- data:
+		return true, nil
+	case <-time.After(5 * time.Second):
+		return false, fmt.Errorf("写队列已满")
+	}
+}
+
 // dispatch 处理 Agent 上报的消息。
 func (g *Gateway) dispatch(ac *agentConn, env *protocol.Envelope) {
 	switch env.Type {
@@ -189,8 +217,16 @@ func (g *Gateway) dispatch(ac *agentConn, env *protocol.Envelope) {
 		// 更新机器最新元数据。
 		g.updateFromHeartbeat(hb)
 
-	case protocol.MsgTaskResult, protocol.MsgSyncState, protocol.MsgTrafficDelta:
-		// Phase 4+ 处理，先记录已收到。
+	case protocol.MsgTaskResult:
+		if g.OnTaskResult != nil {
+			var tr protocol.TaskResult
+			if err := env.PayloadInto(&tr); err == nil {
+				g.OnTaskResult(&tr)
+			}
+		}
+
+	case protocol.MsgSyncState, protocol.MsgTrafficDelta:
+		// Phase 5+ / 6 处理，先记录已收到。
 
 	default:
 		slog.Debug("未处理的消息类型", "type", env.Type)
