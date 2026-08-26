@@ -50,6 +50,9 @@ func Serve() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// 启动在线状态维护（周期把超时机器标记 offline）。
+	srv.StartOfflineSweeper(ctx, 10*time.Second)
+
 	slog.Info("Manager 已启动 http://" + hs.Addr)
 
 	serveErr := make(chan error, 1)

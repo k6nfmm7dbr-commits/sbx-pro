@@ -4,12 +4,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/client"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/heartbeat"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/state"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/sysinfo"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
@@ -31,7 +35,7 @@ func main() {
 		os.Exit(runEnroll(args[1:]))
 
 	case "run":
-		fmt.Println("sbx-agent run: 待实现（Phase 3）")
+		os.Exit(runAgent(args[1:]))
 
 	case "help", "-h", "--help":
 		usage()
@@ -84,6 +88,47 @@ func runEnroll(args []string) int {
 
 	fmt.Printf("机器已成功接入管理面板\n")
 	fmt.Printf("  machine_id: %s\n", ack.MachineID)
+	return 0
+}
+
+// runAgent 处理 `sbx-agent run`：建立 WebSocket 长连接并持续运行。
+func runAgent(args []string) int {
+	// 读取本地状态，未注册则提示先 enroll。
+	st, err := state.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[sbx-agent]", err)
+		return 1
+	}
+	if !st.Registered() {
+		fmt.Fprintln(os.Stderr, "[sbx-agent] 尚未注册，请先执行: sbx-agent enroll -t TOKEN -u URL")
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	hb := heartbeat.New()
+	info := sysinfo.Gather()
+
+	cfg := client.RunConfig{
+		ManagerURL:    st.ManagerURL,
+		MachineID:     st.MachineID,
+		MachineSecret: st.MachineSecret,
+		HeartbeatSec:  15,
+		HeartbeatFunc: func() protocol.Heartbeat {
+			h := hb.Build(st.MachineID, nil)
+			h.Hostname = info.Hostname
+			h.AgentVersion = version.Version
+			h.AppliedRevision = st.AppliedRevision
+			return h
+		},
+	}
+
+	slog.Info("sbx-agent 启动，连接 Manager", "manager", st.ManagerURL, "machine_id", st.MachineID)
+	if err := client.Run(ctx, cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "[sbx-agent]", err)
+		return 1
+	}
 	return 0
 }
 

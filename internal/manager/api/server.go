@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -16,19 +17,25 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/config"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/db"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/enrollment"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/gateway"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/machines"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
 )
 
 // Server 持有 Manager HTTP 服务依赖。
 type Server struct {
-	cfg *config.Config
-	db  *db.Manager
+	cfg     *config.Config
+	db      *db.Manager
+	gateway *gateway.Gateway
 }
 
 // New 构造 Server。
 func New(cfg *config.Config, db *db.Manager) *Server {
-	return &Server{cfg: cfg, db: db}
+	return &Server{
+		cfg:     cfg,
+		db:      db,
+		gateway: gateway.New(db),
+	}
 }
 
 // NewHTTPServer 构造配置好超时的 *http.Server（不启动监听）。
@@ -43,6 +50,11 @@ func (s *Server) NewHTTPServer() *http.Server {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    32 << 10,
 	}
+}
+
+// StartOfflineSweeper 启动 Manager 的在线状态维护协程。
+func (s *Server) StartOfflineSweeper(ctx context.Context, interval time.Duration) {
+	s.gateway.RunOfflineSweeper(ctx, interval)
 }
 
 func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
@@ -79,6 +91,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case route == "/api/agent/register" && r.Method == http.MethodPost:
 		s.handleRegister(w, r)
+
+	case route == "/api/agent/ws":
+		s.gateway.HandleWS(w, r)
 
 	case route == "/api/enrollment/token" && r.Method == http.MethodPost:
 		s.handleEnrollmentToken(w, r)

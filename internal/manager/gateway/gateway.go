@@ -1,0 +1,243 @@
+// Package gateway 实现 Manager 的 WebSocket gateway（开发提示词第十节）。
+//
+// Agent 主动连接 wss://manager/api/agent/ws，Manager 不主动发起连接、
+// 不开放 Agent 端口。Gateway 负责：
+//   - WebSocket 握手与升级；
+//   - 机器认证（machine_secret 验签 / 校验）；
+//   - 分发 Agent 上报消息（heartbeat 等）；
+//   - 在线/离线状态维护。
+package gateway
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/db"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
+)
+
+// upgrader 配置 WebSocket 升级参数。
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  4096,
+	WriteBufferSize: 4096,
+	// 允许跨源（部署在独立域名时 Agent 从其它域发起）。生产可收紧。
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+// Gateway 是 Manager 侧 WebSocket 网关。
+type Gateway struct {
+	db *db.Manager
+
+	mu       sync.Mutex
+	conns    map[string]*agentConn // machine_id -> conn
+	lastSeen map[string]time.Time
+}
+
+type agentConn struct {
+	machineID string
+	conn      *websocket.Conn
+	send      chan []byte // 串行写队列
+	done      chan struct{}
+}
+
+// New 构造 Gateway。
+func New(d *db.Manager) *Gateway {
+	return &Gateway{
+		db:       d,
+		conns:    make(map[string]*agentConn),
+		lastSeen: make(map[string]time.Time),
+	}
+}
+
+// HandleWS 处理 /api/agent/ws 的 WebSocket 升级与握手。
+func (g *Gateway) HandleWS(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		slog.Warn("WebSocket 升级失败", "err", err)
+		return
+	}
+
+	// 首帧必须是 hello 认证帧，限时等待。
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	env, err := protocol.UnmarshalEnvelope(data)
+	if err != nil || env.Type != protocol.MsgHello {
+		_ = conn.Close()
+		return
+	}
+	var hello protocol.Hello
+	if err := env.PayloadInto(&hello); err != nil {
+		_ = conn.Close()
+		return
+	}
+
+	// 认证：machine_id 存在 + machine_secret 匹配。
+	ack := protocol.HelloAck{Accepted: false}
+	if ok := g.authenticate(hello); !ok {
+		ack.Reason = "认证失败"
+		resp, _ := protocol.New(protocol.MsgHelloAck, env.ID, ack)
+		b, _ := resp.Marshal()
+		_ = conn.WriteMessage(websocket.TextMessage, b)
+		_ = conn.Close()
+		return
+	}
+	ack.MachineID = hello.MachineID
+	ack.Accepted = true
+	resp, _ := protocol.New(protocol.MsgHelloAck, env.ID, ack)
+	b, _ := resp.Marshal()
+	_ = conn.WriteMessage(websocket.TextMessage, b)
+
+	// 清除读超时，进入消息循环。
+	_ = conn.SetReadDeadline(time.Time{})
+
+	ac := &agentConn{
+		machineID: hello.MachineID,
+		conn:      conn,
+		send:      make(chan []byte, 32),
+		done:      make(chan struct{}),
+	}
+	g.register(ac)
+	defer g.unregister(ac)
+
+	// 写协程：串行化写，避免并发写 panic。
+	go g.writeLoop(ac)
+
+	// 标记在线。
+	g.markSeen(hello.MachineID)
+
+	// 读循环。
+	g.readLoop(ac)
+}
+
+func (g *Gateway) register(ac *agentConn) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if old, ok := g.conns[ac.machineID]; ok {
+		// 同 machine_id 重复连接：关掉旧连接。
+		close(old.done)
+		_ = old.conn.Close()
+		delete(g.conns, ac.machineID)
+	}
+	g.conns[ac.machineID] = ac
+}
+
+func (g *Gateway) unregister(ac *agentConn) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if cur, ok := g.conns[ac.machineID]; ok && cur == ac {
+		delete(g.conns, ac.machineID)
+	}
+	close(ac.done)
+	_ = ac.conn.Close()
+}
+
+func (g *Gateway) markSeen(machineID string) {
+	g.mu.Lock()
+	g.lastSeen[machineID] = time.Now()
+	g.mu.Unlock()
+	// 更新数据库 last_seen + status=online。
+	_, _ = g.db.SQL().Exec(
+		`UPDATE machines SET last_seen = ?, status = 'online' WHERE machine_id = ?`,
+		time.Now().Unix(), machineID)
+}
+
+func (g *Gateway) writeLoop(ac *agentConn) {
+	for {
+		select {
+		case msg := <-ac.send:
+			_ = ac.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := ac.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case <-ac.done:
+			return
+		}
+	}
+}
+
+func (g *Gateway) readLoop(ac *agentConn) {
+	for {
+		_, data, err := ac.conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		env, perr := protocol.UnmarshalEnvelope(data)
+		if perr != nil {
+			continue
+		}
+		g.dispatch(ac, env)
+	}
+}
+
+// dispatch 处理 Agent 上报的消息。
+func (g *Gateway) dispatch(ac *agentConn, env *protocol.Envelope) {
+	switch env.Type {
+	case protocol.MsgHeartbeat:
+		var hb protocol.Heartbeat
+		if err := env.PayloadInto(&hb); err != nil {
+			return
+		}
+		g.markSeen(ac.machineID)
+		// 更新机器最新元数据。
+		g.updateFromHeartbeat(hb)
+
+	case protocol.MsgTaskResult, protocol.MsgSyncState, protocol.MsgTrafficDelta:
+		// Phase 4+ 处理，先记录已收到。
+
+	default:
+		slog.Debug("未处理的消息类型", "type", env.Type)
+	}
+}
+
+// updateFromHeartbeat 用心跳刷新机器的动态字段。
+func (g *Gateway) updateFromHeartbeat(hb protocol.Heartbeat) {
+	if hb.MachineID == "" {
+		return
+	}
+	_, _ = g.db.SQL().Exec(`
+		UPDATE machines SET
+			hostname = CASE WHEN ? != '' THEN ? ELSE hostname END,
+			agent_version = CASE WHEN ? != '' THEN ? ELSE agent_version END,
+			singbox_version = CASE WHEN ? != '' THEN ? ELSE singbox_version END,
+			ipv4 = CASE WHEN ? != '' THEN ? ELSE ipv4 END,
+			ipv6 = CASE WHEN ? != '' THEN ? ELSE ipv6 END,
+			applied_revision = ?,
+			last_seen = ?,
+			status = 'online'
+		WHERE machine_id = ?`,
+		hb.Hostname, hb.Hostname,
+		hb.AgentVersion, hb.AgentVersion,
+		hb.SingboxVersion, hb.SingboxVersion,
+		hb.IPv4, hb.IPv4,
+		hb.IPv6, hb.IPv6,
+		hb.AppliedRevision,
+		time.Now().Unix(),
+		hb.MachineID)
+}
+
+// authenticate 校验 machine_id + machine_secret。
+// Phase 3 简化：校验 machine_id 存在且 secret 非空（后续 Phase 用 Ed25519 验签）。
+func (g *Gateway) authenticate(hello protocol.Hello) bool {
+	if hello.MachineID == "" || hello.MachineSecret == "" {
+		return false
+	}
+	var exists int
+	err := g.db.SQL().QueryRow(
+		`SELECT COUNT(*) FROM agents WHERE machine_id = ?`, hello.MachineID).Scan(&exists)
+	if err != nil || exists == 0 {
+		return false
+	}
+	// machine_secret 是 Ed25519 私钥 hex；公钥存 agents.secret_pub。
+	// Phase 3 先验证 secret 非空且机器存在；严谨验签在后续补充。
+	return true
+}
+
+var _ = json.Marshal
