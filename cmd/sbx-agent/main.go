@@ -28,6 +28,7 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/sysinfo"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/agent/trafsync"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/config"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/connection"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/database"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/nodes"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/protocol"
@@ -47,6 +48,43 @@ func (s *trafficSender) SendTrafficDelta(td protocol.TrafficDelta) error {
 		return fmt.Errorf("连接未建立")
 	}
 	return s.conn.SendTrafficDelta(td)
+}
+
+// syncNodeIPs 采集各节点的在线公网源 IP 并上报给 Manager（ip_sync）。
+func syncNodeIPs(ac *client.AgentConn, svc *nodesvc.Service, machineID string) {
+	list := svc.List()
+	if len(list) == 0 {
+		return
+	}
+	byPort, _ := connection.RemoteIPsByPort(
+		[]string{"/proc/net/tcp", "/proc/net/tcp6"},
+		[]string{"/proc/net/udp", "/proc/net/udp6"},
+		func(p string) (string, error) {
+			b, err := os.ReadFile(p)
+			return string(b), err
+		},
+	)
+	now := time.Now().Unix()
+	for _, n := range list {
+		nodeUUID := nodes.Str(n, "node_uuid")
+		if nodeUUID == "" {
+			continue
+		}
+		port, err := strconv.Atoi(nodes.Str(n, "port"))
+		if err != nil || port <= 0 {
+			continue
+		}
+		var ipList []protocol.ActiveIP
+		for ip, ar := range byPort[port] {
+			ipList = append(ipList, protocol.ActiveIP{IP: ip, Proto: ar.Protocol, LastSeen: now})
+		}
+		_ = ac.Send(protocol.MsgIPSync, "", protocol.IPSnapshot{
+			MachineID: machineID,
+			NodeUUID:  nodeUUID,
+			LocalPort: port,
+			ActiveIPs: ipList,
+		})
+	}
 }
 
 func main() {
@@ -270,6 +308,21 @@ func runAgent(args []string) int {
 						if err := traf.SyncOnce(ctx); err != nil {
 							slog.Warn("流量同步失败", "err", err)
 						}
+					}
+				}
+			}()
+
+			// 在线 IP 上报循环（每 30s 采集各节点活跃源 IP）。
+			go func() {
+				syncNodeIPs(ac, svc, st.MachineID)
+				ipTicker := time.NewTicker(30 * time.Second)
+				defer ipTicker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ipTicker.C:
+						syncNodeIPs(ac, svc, st.MachineID)
 					}
 				}
 			}()

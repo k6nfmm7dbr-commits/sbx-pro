@@ -21,6 +21,7 @@ import (
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/db"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/enrollment"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/gateway"
+	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/ips"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/machines"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/nodes"
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/manager/tasks"
@@ -45,6 +46,16 @@ func New(cfg *config.Config, db *db.Manager) *Server {
 		// 流量增量入库（防重）。重复数据返回 accepted=false 但 err=nil，视为成功。
 		_, err := traffic.IngestDelta(db.SQL(), *td)
 		return err
+	}
+	gw.OnIPSync = func(snap *protocol.IPSnapshot) {
+		// 在线 IP 快照入库（全量替换该节点），失败仅日志不影响连接。
+		list := make([]ips.ActiveIP, 0, len(snap.ActiveIPs))
+		for _, a := range snap.ActiveIPs {
+			list = append(list, ips.ActiveIP{IP: a.IP, Proto: a.Proto, LastSeen: a.LastSeen})
+		}
+		if err := ips.Sync(db.SQL(), snap.MachineID, snap.NodeUUID, list); err != nil {
+			slog.Warn("在线 IP 入库失败", "machine_id", snap.MachineID, "node", snap.NodeUUID, "err", err)
+		}
 	}
 	s := &Server{
 		cfg:        cfg,
@@ -194,6 +205,8 @@ func (s *Server) routeNode(w http.ResponseWriter, r *http.Request, rest string) 
 		s.handleNodeQuota(w, r, id)
 	case sub == "ip-limit" && r.Method == http.MethodPost:
 		s.handleNodeIPLimit(w, r, id)
+	case sub == "active-ips" && r.Method == http.MethodGet:
+		s.handleNodeActiveIPs(w, r, id)
 	default:
 		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -910,6 +923,32 @@ func (s *Server) handleNodeIPLimit(w http.ResponseWriter, r *http.Request, nodeU
 	s.sendJSON(w, http.StatusOK, map[string]any{"node_uuid": nodeUUID, "task_id": taskID})
 }
 
+// handleNodeActiveIPs 返回节点当前在线 IP 列表。
+func (s *Server) handleNodeActiveIPs(w http.ResponseWriter, r *http.Request, nodeUUID string) {
+	if !s.authorized(r) {
+		s.sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	n, err := nodes.Get(s.db.SQL(), nodeUUID)
+	if err != nil {
+		s.sendJSON(w, http.StatusNotFound, map[string]string{"error": "节点不存在"})
+		return
+	}
+	list, err := ips.ListByNode(s.db.SQL(), n.MachineID, nodeUUID)
+	if err != nil {
+		s.sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if list == nil {
+		list = []ips.ActiveIP{}
+	}
+	s.sendJSON(w, http.StatusOK, map[string]any{
+		"node_uuid":  nodeUUID,
+		"active_ips": list,
+		"count":      len(list),
+	})
+}
+
 // handleNodeTaskResult 驱动节点状态机收敛（任务完成回调）。
 func (s *Server) handleNodeTaskResult(task *tasks.Task, status protocol.TaskStatus, message string) {
 	if task.NodeUUID == "" {
@@ -936,6 +975,7 @@ func (s *Server) handleNodeTaskResult(task *tasks.Task, status protocol.TaskStat
 	case protocol.MsgDeleteNode:
 		if status == protocol.TaskSuccess {
 			_ = nodes.Delete(db, task.NodeUUID)
+			_ = ips.DeleteForNode(db, task.MachineID, task.NodeUUID)
 		} else {
 			_ = nodes.UpdateStatus(db, task.NodeUUID, nodes.StatusDeletePending, nodes.StatusConfigError)
 		}

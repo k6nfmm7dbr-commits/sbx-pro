@@ -38,7 +38,7 @@
     var headers = {};
     if (opts.body !== undefined && opts.body !== null) headers['Content-Type'] = 'application/json';
     var ctrl = new AbortController();
-    var timer = setTimeout(function () { ctrl.abort(); }, 15000);
+    var timer = setTimeout(function () { ctrl.abort(); }, 8000);
     return fetch(path, {
       method: method, headers: headers, body: opts.body,
       credentials: 'same-origin', signal: ctrl.signal
@@ -330,39 +330,142 @@
   // ===== 节点详情 / 操作 =====
   function openNodeDetail(uuid) {
     api('/api/nodes/' + encodeURIComponent(uuid)).then(function (n) {
-      $('#node-detail-title').textContent = n.name || n.node_uuid;
-      var html = '<div class="detail-row"><span>协议</span><b>' + escapeHTML(protoLabel(n.protocol)) + '</b></div>' +
-        '<div class="detail-row"><span>端口</span><b>' + escapeHTML(n.port) + '</b></div>' +
-        '<div class="detail-row"><span>状态</span><b class="' + statusClass(n.status) + '">' + escapeHTML(statusText(n.status)) + '</b></div>' +
-        '<div class="detail-row"><span>流量额度</span><b>' + (n.quota_limit ? fmtBytes(n.quota_limit) : '无限制') + '</b></div>' +
-        '<div class="detail-row"><span>在线 IP 限制</span><b>' + (n.ip_limit || '无限制') + '</b></div>';
-      $('#node-detail-body').innerHTML = html;
-      $('#share-result').innerHTML = '';
-
-      // 操作按钮
-      var ops = document.createElement('div');
-      ops.className = 'node-actions';
-      var mk = function (label, action, danger) {
-        var b = document.createElement('button');
-        b.className = 'btn-mini ' + (danger ? 'btn-danger' : 'btn-ghost');
-        b.textContent = label;
-        b.addEventListener('click', function () {
-          closeModal($('#node-detail-modal'));
-          nodeAction(uuid, action, danger);
+      // 取该节点已用流量。
+      api('/api/traffic?machine_id=' + encodeURIComponent(n.machine_id)).then(function (td) {
+        var used = 0;
+        (td.totals || []).forEach(function (t) {
+          if (t.node_uuid === n.node_uuid) used = (t.rx || 0) + (t.tx || 0);
         });
-        return b;
-      };
-      if (n.status === 'disabled') ops.appendChild(mk('启用', 'enable'));
-      else if (n.status === 'active') ops.appendChild(mk('停用', 'disable'));
-      ops.appendChild(mk('重启 sing-box', 'restart'));
-      ops.appendChild(mk('删除', 'delete', true));
-      $('#node-detail-body').appendChild(ops);
-
-      openModal($('#node-detail-modal'));
+        renderNodeDetail(n, used);
+      }).catch(function () { renderNodeDetail(n, 0); });
     }).catch(function (e) { toast(e.message, true); });
   }
 
+  function renderNodeDetail(n, used) {
+    $('#node-detail-title').textContent = n.name || n.node_uuid;
+    var body = $('#node-detail-body');
+    body.innerHTML = '';
+
+    function row(label, val, cls) {
+      var d = document.createElement('div');
+      d.className = 'detail-row';
+      var s = document.createElement('span');
+      s.textContent = label;
+      var b = document.createElement('b');
+      if (cls) b.className = cls;
+      b.textContent = val;
+      d.appendChild(s); d.appendChild(b);
+      return d;
+    }
+
+    body.appendChild(row('协议', protoLabel(n.protocol)));
+    body.appendChild(row('端口', n.port));
+    body.appendChild(row('状态', statusText(n.status), statusClass(n.status)));
+    body.appendChild(row('已用流量', fmtBytes(used)));
+    body.appendChild(row('流量额度', n.quota_limit ? fmtBytes(n.quota_limit) : '无限制'));
+    body.appendChild(row('在线 IP 限制', n.ip_limit ? String(n.ip_limit) : '无限制'));
+
+    // 在线 IP 查看
+    var ipBtn = document.createElement('button');
+    ipBtn.className = 'btn-mini btn-ghost';
+    ipBtn.textContent = '查看在线 IP';
+    var ipBox = document.createElement('div');
+    ipBox.className = 'ip-box';
+    ipBtn.addEventListener('click', function () {
+      ipBtn.disabled = true;
+      api('/api/nodes/' + encodeURIComponent(n.node_uuid) + '/active-ips').then(function (d) {
+        var ips = d.active_ips || [];
+        if (!ips.length) { ipBox.innerHTML = '<div class="hint-text">暂无在线 IP（当前没有活跃连接，或节点刚创建）</div>'; return; }
+        ipBox.innerHTML = ips.map(function (a) {
+          return '<span class="chip ip-chip">' + escapeHTML(a.ip) + ' <small>(' + escapeHTML(a.proto) + ')</small></span>';
+        }).join(' ');
+      }).catch(function (e) { toast(e.message, true); })
+        .finally(function () { ipBtn.disabled = false; });
+    });
+    body.appendChild(ipBtn);
+    body.appendChild(ipBox);
+
+    // 设置流量额度
+    var quotaWrap = document.createElement('div');
+    quotaWrap.className = 'setting-row';
+    quotaWrap.innerHTML = '<label class="field-label">设置流量额度（GiB，0=无限制）</label>';
+    var quotaInput = document.createElement('input');
+    quotaInput.type = 'number'; quotaInput.inputMode = 'decimal'; quotaInput.min = '0';
+    quotaInput.placeholder = '留空或 0 = 无限制';
+    var quotaBtn = document.createElement('button');
+    quotaBtn.className = 'btn-mini btn-ghost'; quotaBtn.textContent = '设置额度';
+    quotaBtn.addEventListener('click', function () {
+      var gb = parseFloat(quotaInput.value || '0');
+      if (isNaN(gb) || gb < 0) { toast('请输入合法的额度（GiB，≥0）', true); return; }
+      var bytes = Math.round(gb * 1024 * 1024 * 1024);
+      if (bytes < used) {
+        confirmDialog('确认设置额度', '设置额度（' + fmtBytes(bytes) + '）小于已用流量（' + fmtBytes(used) + '），节点将立即被阻断。是否继续？', function () {
+          submitQuota(n.node_uuid, bytes, quotaBtn);
+        });
+      } else {
+        submitQuota(n.node_uuid, bytes, quotaBtn);
+      }
+    });
+    quotaWrap.appendChild(quotaInput); quotaWrap.appendChild(quotaBtn);
+    body.appendChild(quotaWrap);
+
+    // 设置 IP 限制
+    var ipLimitWrap = document.createElement('div');
+    ipLimitWrap.className = 'setting-row';
+    ipLimitWrap.innerHTML = '<label class="field-label">设置同时在线 IP 数（0=无限制）</label>';
+    var ipLimitInput = document.createElement('input');
+    ipLimitInput.type = 'number'; ipLimitInput.inputMode = 'numeric'; ipLimitInput.min = '0';
+    ipLimitInput.placeholder = '例如 2';
+    var ipLimitBtn = document.createElement('button');
+    ipLimitBtn.className = 'btn-mini btn-ghost'; ipLimitBtn.textContent = '设置限制';
+    ipLimitBtn.addEventListener('click', function () {
+      var v = parseInt(ipLimitInput.value || '0', 10);
+      if (isNaN(v) || v < 0) { toast('请输入合法数字（≥0）', true); return; }
+      ipLimitBtn.disabled = true;
+      api('/api/nodes/' + encodeURIComponent(n.node_uuid) + '/ip-limit', { method: 'POST', body: JSON.stringify({ ip_limit: v }) })
+        .then(function () { toast('IP 限制已下发'); refreshAll(); })
+        .catch(function (e) { toast(e.message, true); })
+        .finally(function () { ipLimitBtn.disabled = false; });
+    });
+    ipLimitWrap.appendChild(ipLimitInput); ipLimitWrap.appendChild(ipLimitBtn);
+    body.appendChild(ipLimitWrap);
+
+    // 操作按钮
+    var ops = document.createElement('div');
+    ops.className = 'node-actions';
+    var mk = function (label, action, danger) {
+      var b = document.createElement('button');
+      b.className = 'btn-mini ' + (danger ? 'btn-danger' : 'btn-ghost');
+      b.textContent = label;
+      b.addEventListener('click', function () {
+        closeModal($('#node-detail-modal'));
+        nodeAction(n.node_uuid, action, danger);
+      });
+      return b;
+    };
+    if (n.status === 'disabled') ops.appendChild(mk('启用', 'enable'));
+    else if (n.status === 'active') ops.appendChild(mk('停用', 'disable'));
+    ops.appendChild(mk('重启 sing-box', 'restart'));
+    ops.appendChild(mk('分享', 'share'));
+    ops.appendChild(mk('删除', 'delete', true));
+    body.appendChild(ops);
+
+    // 清空分享结果容器（在 modal 内，node-detail-body 之后）。
+    $('#share-result').innerHTML = '';
+
+    openModal($('#node-detail-modal'));
+  }
+
+  function submitQuota(uuid, bytes, btn) {
+    btn.disabled = true;
+    api('/api/nodes/' + encodeURIComponent(uuid) + '/quota', { method: 'POST', body: JSON.stringify({ limit_bytes: bytes }) })
+      .then(function () { toast('流量额度已下发'); closeModal($('#node-detail-modal')); refreshAll(); })
+      .catch(function (e) { toast(e.message, true); })
+      .finally(function () { btn.disabled = false; });
+  }
+
   function nodeAction(uuid, action, danger) {
+    if (action === 'share') { showShare(uuid); return; }
     var map = {
       enable: { text: '启用该节点？', fn: function (ok) { return ok && api('/api/nodes/' + encodeURIComponent(uuid) + '/enable', { method: 'POST' }); } },
       disable: { text: '停用该节点？（凭据保留，不删除）', fn: function (ok) { return ok && api('/api/nodes/' + encodeURIComponent(uuid) + '/disable', { method: 'POST' }); } },
@@ -504,6 +607,10 @@
       var share = e.target.closest && e.target.closest('[data-node-share]');
       if (share) { showShare(share.getAttribute('data-node-share')); return; }
     });
+
+    // 断线 / 恢复检测
+    window.addEventListener('offline', function () { setStatus('网络已断开', 'stale'); });
+    window.addEventListener('online', function () { setStatus('连接中…', ''); refreshAll(); });
 
     // 初始加载
     loadCaps().catch(function () {});

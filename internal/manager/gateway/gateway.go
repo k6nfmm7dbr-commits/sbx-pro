@@ -54,6 +54,9 @@ type Gateway struct {
 
 	// OnTrafficDelta 是流量增量回调（由 traffic 模块注入），返回入库错误。
 	OnTrafficDelta func(*protocol.TrafficDelta) error
+
+	// OnIPSync 是在线 IP 快照回调（由 api 层注入，存 ip_sessions）。
+	OnIPSync func(*protocol.IPSnapshot)
 }
 
 type agentConn struct {
@@ -320,6 +323,14 @@ func (g *Gateway) dispatch(ac *agentConn, env *protocol.Envelope) {
 
 	case protocol.MsgSyncState:
 		// Phase 5+ 处理 config_revision 同步，先记录。
+
+	case protocol.MsgIPSync:
+		if g.OnIPSync != nil {
+			var snap protocol.IPSnapshot
+			if err := env.PayloadInto(&snap); err == nil && snap.MachineID != "" {
+				g.OnIPSync(&snap)
+			}
+		}
 
 	default:
 		slog.Debug("未处理的消息类型", "type", env.Type)
