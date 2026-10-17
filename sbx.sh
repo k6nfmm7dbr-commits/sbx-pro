@@ -7,7 +7,7 @@
 # 安装 Agent（B/C/D 机）:
 #   bash <(curl -fLSs https://raw.githubusercontent.com/k6nfmm7dbr-commits/sbx-pro/main/sbx.sh) agent -t TOKEN -u https://panel.example.com
 #
-# 安装完成后运行 `sbx` 打开管理菜单。
+# 安装完成后运行 `nbx` 打开管理菜单。
 # 二进制从 dist 分支下载（rolling latest），sha256 校验后安装。
 
 set -euo pipefail
@@ -15,7 +15,7 @@ set -euo pipefail
 RAW_BASE="${SBX_RAW_BASE:-https://raw.githubusercontent.com/k6nfmm7dbr-commits/sbx-pro/dist}"
 RAW_URL="${SBX_RAW_URL:-https://raw.githubusercontent.com/k6nfmm7dbr-commits/sbx-pro/main/sbx.sh}"
 BIN_DIR=/usr/local/bin
-SELF_PATH=/usr/local/bin/sbx
+SELF_PATH=/usr/local/bin/nbx
 ROLE_MANAGER=/etc/sbx-pro/role
 ROLE_AGENT=/etc/sbx-agent/role
 
@@ -59,14 +59,46 @@ download_bin() { # download_bin <name>
   ok "${name} 安装完成"
 }
 
-# 安装/更新本地 sbx 脚本（curl 到稳定路径），保证 `sbx` 命令可用。
+# public_ip 取本机对外 IPv4：优先默认路由源地址（不联网），
+# 再退回外网探测，最后回环兜底。
+public_ip() {
+  local ip=""
+  ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}') || true
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && { echo "$ip"; return 0; }
+  for u in "https://api.ipify.org" "https://ipv4.icanhazip.com"; do
+    ip=$(curl -4 -fsSL -m 6 "$u" 2>/dev/null | tr -d '[:space:]') || true
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && { echo "$ip"; return 0; }
+    ip=""
+  done
+  ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1) || true
+  echo "${ip:-127.0.0.1}"
+}
+
+# panel_port 读取 Manager 实际监听端口（配置缺失时退回 8080）。
+panel_port() {
+  local port
+  port=$(grep -o '"port":[0-9]*' /etc/sbx-pro/manager.json 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)
+  echo "${port:-8080}"
+}
+
+# panel_url 生成可直接点开的面板地址（自动填本机 IP，不再让用户手抄）。
+panel_url() {
+  local port; port=$(panel_port)
+  echo "http://$(public_ip):${port}/"
+}
+
+# 安装/更新本地脚本（curl 到稳定路径），保证 `nbx` 命令可用。
 install_self() {
   mkdir -p /etc/sbx-pro
   curl -fLSs -m 60 -o /etc/sbx-pro/sbx.sh "${RAW_URL}" || die "下载 sbx.sh 失败"
   bash -n /etc/sbx-pro/sbx.sh || die "sbx.sh 语法校验失败"
   printf '#!/bin/sh\nexec bash /etc/sbx-pro/sbx.sh menu "$@"\n' > "$SELF_PATH"
   chmod 0755 "$SELF_PATH"
-  ok "已安装 sbx 命令（运行 sbx 打开菜单）"
+  # 清理早期版本留下的 `sbx` 包装（只删我们自己的，不碰单机版 sbx）。
+  if [[ -f /usr/local/bin/sbx ]] && grep -q '/etc/sbx-pro/sbx.sh' /usr/local/bin/sbx 2>/dev/null; then
+    rm -f /usr/local/bin/sbx
+  fi
+  ok "已安装 nbx 命令（运行 nbx 打开菜单）"
 }
 
 # ---------- Manager 安装 ----------
@@ -112,8 +144,8 @@ EOF
     sleep 2
   fi
 
-  # 健康检查。
-  local port=8080
+  # 健康检查（端口读管理配置，避免用户改过端口后误报）。
+  local port; port=$(panel_port)
   curl -fsS -m 5 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1 || warn "healthz 未通过（服务可能仍在启动）"
 
   echo ""
@@ -122,9 +154,9 @@ EOF
   else
     ok "Manager 安装完成"
   fi
-  echo "  面板地址: http://<本机IP>:${port}"
+  echo "  面板地址: $(panel_url)"
   echo "  管理令牌: ${token}"
-  echo "  随时运行: sbx"
+  echo "  随时运行: nbx"
 }
 
 # ---------- Agent 安装 ----------
@@ -219,7 +251,7 @@ EOF
   [[ -n "${mid:-}" ]] && echo "  machine_id: ${mid}"
   echo "  Agent: 运行中"
   echo "  sing-box: 运行中"
-  echo "  随时运行: sbx"
+  echo "  随时运行: nbx"
 }
 
 install_sing_box() {
@@ -321,7 +353,7 @@ remove_program() {
   fi
   pkill -f 'sbx-manager serve' 2>/dev/null || true
   pkill -f 'sbx-agent run' 2>/dev/null || true
-  rm -f "$BIN_DIR/sbx-manager" "$BIN_DIR/sbx-agent" "$BIN_DIR/sbx" /etc/sbx-pro/sbx.sh
+  rm -f "$BIN_DIR/sbx-manager" "$BIN_DIR/sbx-agent" "$BIN_DIR/nbx" /etc/sbx-pro/sbx.sh
   ok "程序已卸载（数据保留）。若该机器接入过面板，请在 WebUI 删除机器记录。"
 }
 
@@ -349,28 +381,52 @@ remove_all() {
 # ---------- 菜单 ----------
 menu_main() {
   local role; role=$(detect_role)
-  local ver
-  ver=$([[ -x "${BIN_DIR}/sbx-${role}" ]] && "${BIN_DIR}/sbx-${role}" version 2>/dev/null | head -1 || echo "未安装")
-  clear 2>/dev/null || true
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo " SBX Pro  ($role)"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "  版本: ${ver}"
-  echo "  服务: $([[ -n "$role" ]] && service_status "$role")"
-  echo ""
-  echo "  4) 系统设置"
-  echo "  5) 检查更新"
-  echo "  6) 卸载"
-  echo "  0) 退出"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  read -rp "请选择: " c || c=0
-  case "$c" in
-    4) menu_settings ;;
-    5) do_update ;;
-    6) uninstall ;;
-    0) echo "再见"; exit 0 ;;
-    *) menu_main ;;
-  esac
+  while :; do
+    local ver
+    ver=$([[ -x "${BIN_DIR}/sbx-${role}" ]] && "${BIN_DIR}/sbx-${role}" version 2>/dev/null | head -1 || echo "未安装")
+    clear 2>/dev/null || true
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo " SBX Pro  (${role})"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  版本: ${ver}"
+    if [[ "$role" == manager ]]; then
+      # 状态行与 sbx 一致：服务/面板都用一个状态点表示。
+      echo "  服务: $(service_status "$role")    面板: $(panel_running_desc)"
+      echo "  面板: $(panel_url)"
+    else
+      local node_count
+      node_count=$(grep -c '"id"' /etc/sbx/nodes.json 2>/dev/null || echo 0)
+      echo "  节点: ${node_count} 个    sing-box: $(singbox_running_desc)    服务: $(service_status "$role")"
+    fi
+    echo ""
+    echo "  1) 系统设置与运维"
+    echo "  2) 检查更新"
+    echo "  3) 卸载"
+    echo "  0) 退出"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    read -rp "请选择: " c || c=0
+    case "$c" in
+      1) menu_settings ;;
+      2) do_update; read -rp "按回车继续..." _ || true ;;
+      3) uninstall ;;
+      0|"") echo "再见"; exit 0 ;;
+      *) ;;
+    esac
+  done
+}
+
+# panel_running_desc / singbox_running_desc：状态点（●运行中 / ○停止）。
+panel_running_desc() {
+  local port; port=$(panel_port)
+  if curl -fsS -m 2 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
+    echo "●"
+  else
+    echo "○"
+  fi
+}
+
+singbox_running_desc() {
+  if systemctl is-active --quiet sing-box 2>/dev/null; then echo "●"; else echo "○"; fi
 }
 
 service_status() {
@@ -384,8 +440,9 @@ menu_settings() {
   local role; role=$(detect_role)
   clear 2>/dev/null || true
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo " 系统设置 · ${role}"
+  echo " 系统设置与运维 · ${role}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  [[ "$role" == manager ]] && echo " 面板: $(panel_url)" && echo ""
   if [[ "$role" == manager ]]; then
     echo "  1) 面板设置"
     echo "  2) 服务管理"
@@ -413,9 +470,13 @@ menu_settings() {
 settings_manager_panel() {
   local port
   port=$(grep -o '"port":[0-9]*' /etc/sbx-pro/manager.json 2>/dev/null | head -1 | grep -oE '[0-9]+' || echo 8080)
+  local listen
+  listen=$(grep -o '"listen":"[^"]*"' /etc/sbx-pro/manager.json 2>/dev/null | cut -d'"' -f4 || echo 0.0.0.0)
   echo "当前监听端口: ${port}"
-  echo "监听地址: $(grep -o '"listen":"[^"]*"' /etc/sbx-pro/manager.json 2>/dev/null | cut -d'"' -f4 || echo 0.0.0.0)"
-  echo "面板 URL: http://<本机IP>:${port}"
+  echo "监听地址: ${listen}"
+  echo "面板地址: $(panel_url)"
+  [[ "$listen" == "127.0.0.1" || "$listen" == "localhost" ]] && \
+    warn "当前只监听回环地址，外网访问需要把 manager.json 的 listen 改为 0.0.0.0"
   read -rp "修改端口？(留空跳过): " np || true
   if [[ -n "$np" ]]; then
     [[ "$np" =~ ^[0-9]+$ ]] && [[ "$np" -ge 1 && "$np" -le 65535 ]] || die "端口非法"
@@ -426,7 +487,7 @@ settings_manager_panel() {
     sleep 2
     systemctl is-active --quiet sbx-manager || { cp /etc/sbx-pro/manager.json.bak /etc/sbx-pro/manager.json; systemctl restart sbx-manager || true; die "端口修改后服务未运行，已回滚"; }
     rm -f /etc/sbx-pro/manager.json.bak
-    ok "端口已改为 ${np}"
+    ok "端口已改为 ${np}，新面板地址: $(panel_url)"
   fi
   read -rp "按回车继续..." _ || true
   menu_settings
@@ -520,7 +581,7 @@ case "${1:-}" in
     echo "SBX Pro 一键安装"
     echo "  装面板: bash <(curl -fLSs $RAW_URL) manager"
     echo "  装节点: bash <(curl -fLSs $RAW_URL) agent -t TOKEN -u https://panel.example.com"
-    echo "  更新:   sbx --update [--force]"
+    echo "  更新:   nbx --update [--force]"
     echo "  卸载:   bash <(curl -fLSs $RAW_URL) uninstall"
     exit 2 ;;
 esac

@@ -114,10 +114,10 @@ active ──delete──▶ delete_pending ──success──▶ (记录删除
 bash <(curl -fLSs https://raw.githubusercontent.com/k6nfmm7dbr-commits/sbx-pro/main/sbx.sh) manager
 ```
 
-安装完成后运行：
+安装完成后运行（面板地址会直接打印出来，无需手抄 IP）：
 
 ```bash
-sbx
+nbx
 ```
 
 打开管理菜单。安装幂等：重复执行即「修复/升级」，保留 DB / 令牌 / 机器 / 节点 / 流量数据。
@@ -130,30 +130,39 @@ sbx
 bash <(curl -fLSs https://raw.githubusercontent.com/k6nfmm7dbr-commits/sbx-pro/main/sbx.sh) agent -t TOKEN -u https://panel.example.com
 ```
 
-脚本自动：装 sing-box（sha256 校验）→ 装 sbx-agent → 本地生成身份 → 注册 → 启动。同样安装后运行 `sbx` 打开菜单。
+脚本自动：装 sing-box（sha256 校验）→ 装 sbx-agent → 本地生成身份 → 注册 → 启动。同样安装后运行 `nbx` 打开菜单。
 
-## sbx 菜单
+## 菜单
 
-安装后执行 `sbx`，自动识别 Manager/Agent 角色，进入同风格菜单：
+安装后执行 `nbx`，自动识别 Manager/Agent 角色，菜单结构与单机版 sbx 一致
+（编号 1/2/3/0，顶部一行状态 + 面板地址）：
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- SBX Pro  (manager / agent)
+ SBX Pro  (manager)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  4) 系统设置
-  5) 检查更新
-  6) 卸载
+  版本: v1.0.0
+  服务: ● 运行中    面板: ●
+  面板: http://203.0.113.10:8080/
+
+  1) 系统设置与运维
+  2) 检查更新
+  3) 卸载
   0) 退出
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-编号沿用原 SBX 的 4/5/6/0。系统设置角色化：Manager 有面板设置 / 服务管理 / 管理令牌 / 运行自检；Agent 有连接状态 / 服务管理 / 流量统计自检 / 运行自检。
+面板地址自动填本机 IP（优先默认路由源地址，无需联网），端口读取
+`manager.json` 的实际值——不再需要手动替换 `<本机IP>`。
 
-更新也支持命令行：`sbx --update`（或 `--update --force`），与菜单共用同一套更新逻辑（sha256 内容比较 + 备份 + 回滚 + 健康检查）。
+系统设置角色化（同样 1/2/3/4 + 0 返回）：Manager 有面板设置 / 管理令牌 /
+服务管理 / 运行自检；Agent 有连接状态 / 服务管理 / 流量统计自检 / 运行自检。
+
+更新也支持命令行：`nbx --update`（或 `--update --force`），与菜单共用同一套更新逻辑（sha256 内容比较 + 备份 + 回滚 + 健康检查）。
 
 ## 卸载
 
-`sbx` → 6) 卸载（或 `bash <(curl ...) uninstall`），按角色提供：
+`nbx` → 3) 卸载（或 `bash <(curl ...) uninstall`），按角色提供：
 
 - 卸载程序但保留数据；
 - 完全卸载并删除数据（路径白名单 + 二次确认）。
@@ -226,7 +235,7 @@ bash -n sbx.sh      # 安装脚本语法检查
 ## 已知的非阻塞 Future Improvements
 
 1. 机器公网 IP 自动探测未实现（`share` 链接目前回退 hostname，可在「机器」页手动维护 public_host）；
-2. `update_agent`（Agent 自升级）为安全预留，本轮未启用（当前走 `sbx --update` 手动升级）；
+2. `update_agent`（Agent 自升级）为安全预留，本轮未启用（当前走 `nbx --update` 手动升级）；
 3. Manager 生产部署建议在反代（Nginx/Caddy）后启用 HTTPS。
 
 ---
