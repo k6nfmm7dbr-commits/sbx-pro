@@ -2,6 +2,7 @@ package iplimit
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -59,8 +60,9 @@ func TestSortedIPs(t *testing.T) {
 func TestEnforcerCheck(t *testing.T) {
 	s := newTestState(t)
 	_ = s.SetLimit("2", 1) // 只允许 1 个 IP
+	var applied map[string]bool
 	e := &Enforcer{
-		State: s,
+		State:  s,
 		PortOf: func(nodeID string) (int, error) { return 443, nil },
 		ActiveIPs: func(port int) (map[string]struct{}, error) {
 			return map[string]struct{}{
@@ -68,15 +70,85 @@ func TestEnforcerCheck(t *testing.T) {
 				"2.2.2.2": {},
 			}, nil
 		},
+		// 注入阻断器：不依赖 nft，测试的是「阻断决策」而不是环境。
+		ApplyBlock: func(blocked map[string]bool) error {
+			applied = map[string]bool{}
+			for ip := range blocked {
+				applied[ip] = true
+			}
+			return nil
+		},
 	}
-	// 两个活跃 IP，limit=1，应阻断第二个（按排序后的第 2 个）。
+	// 两个活跃 IP，limit=1，应阻断排序后的第二个（2.2.2.2）。
 	if err := e.Check(); err != nil {
-		// 真机上会因 nft 不存在而失败；测试环境跳过 error 检查主体逻辑。
-		t.Logf("Check error (expected on non-nft env): %v", err)
+		t.Fatalf("Check: %v", err)
 	}
-	if e.lastBlocked == nil || len(e.lastBlocked) != 1 {
-		t.Errorf("lastBlocked = %v, want 1 个被阻断 IP", e.lastBlocked)
+	if len(applied) != 1 || !applied["2.2.2.2"] {
+		t.Errorf("applied = %v, want 只阻断 2.2.2.2", applied)
 	}
+	if e.LastError() != nil {
+		t.Errorf("LastError 应为 nil: %v", e.LastError())
+	}
+
+	// 集合不变时不应重复应用（幂等/降噪）。
+	applied = nil
+	if err := e.Check(); err != nil {
+		t.Fatalf("Check 2: %v", err)
+	}
+	if applied != nil {
+		t.Error("集合未变化时不应重新应用")
+	}
+
+	// 应用失败必须暴露给调用方与 LastError，且不更新 lastBlocked。
+	// （换一个新 IP 使阻断集合变化，触发重新应用。）
+	e.ActiveIPs = func(port int) (map[string]struct{}, error) {
+		return map[string]struct{}{"1.1.1.1": {}, "3.3.3.3": {}}, nil
+	}
+	e.ApplyBlock = func(map[string]bool) error { return errors.New("nft boom") }
+	if err := e.Check(); err == nil {
+		t.Fatal("应用失败应返回错误")
+	}
+	if e.LastError() == nil || e.LastError().Error() != "nft boom" {
+		t.Errorf("LastError = %v, want nft boom", e.LastError())
+	}
+}
+
+func TestEnforcerLimitLifted(t *testing.T) {
+	s := newTestState(t)
+	_ = s.SetLimit("2", 1)
+	var applied []map[string]bool
+	e := &Enforcer{
+		State:  s,
+		PortOf: func(nodeID string) (int, error) { return 443, nil },
+		ActiveIPs: func(port int) (map[string]struct{}, error) {
+			return map[string]struct{}{"1.1.1.1": {}, "2.2.2.2": {}}, nil
+		},
+		ApplyBlock: func(blocked map[string]bool) error {
+			applied = append(applied, cloneSet(blocked))
+			return nil
+		},
+	}
+	if err := e.Check(); err != nil {
+		t.Fatal(err)
+	}
+	// 提高额度后：阻断集合应清空（放行），并重新应用一次空集合。
+	if err := s.SetLimit("2", 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Check(); err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 2 || len(applied[1]) != 0 {
+		t.Errorf("提高额度后应应用空集合，applied = %v", applied)
+	}
+}
+
+func cloneSet(m map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 func contains(s, sub string) bool {

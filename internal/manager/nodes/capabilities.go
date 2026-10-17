@@ -36,7 +36,7 @@ func Capabilities() []ProtocolCap {
 			Label: "Shadowsocks 2022",
 			Fields: []ProtocolField{
 				{Key: "method", Label: "加密算法", Type: "select",
-					Options: []string{"2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm"},
+					Options:  []string{"2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm"},
 					Required: true},
 			},
 		},

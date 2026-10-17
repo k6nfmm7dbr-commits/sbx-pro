@@ -211,10 +211,10 @@ func (s *Sync) flushPending() error {
 	defer rows.Close()
 
 	type pend struct {
-		seq         int64
-		nodeUUID    string
-		rx, tx      int64
-		start, end  int64
+		seq        int64
+		nodeUUID   string
+		rx, tx     int64
+		start, end int64
 	}
 	var items []pend
 	for rows.Next() {

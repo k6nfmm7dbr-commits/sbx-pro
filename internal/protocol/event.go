@@ -4,32 +4,32 @@ package protocol
 //
 // agent -> manager（Agent 主动上报）
 const (
-	MsgHello          = "hello"            // 首次连接 / 重新认证握手
-	MsgHeartbeat      = "heartbeat"        // 周期心跳（10~30s）
-	MsgTaskResult     = "task_result"      // 任务执行结果回传
-	MsgNodeStatus     = "node_status"      // 节点状态上报
-	MsgTrafficDelta   = "traffic_delta"    // 流量增量
-	MsgTrafficAck     = "traffic_ack"      // Manager 确认流量增量已入库（回 ACK）
+	MsgHello           = "hello"            // 首次连接 / 重新认证握手
+	MsgHeartbeat       = "heartbeat"        // 周期心跳（10~30s）
+	MsgTaskResult      = "task_result"      // 任务执行结果回传
+	MsgNodeStatus      = "node_status"      // 节点状态上报
+	MsgTrafficDelta    = "traffic_delta"    // 流量增量
+	MsgTrafficAck      = "traffic_ack"      // Manager 确认流量增量已入库（回 ACK）
 	MsgTrafficSnapshot = "traffic_snapshot" // 流量完整快照（重连补传）
-	MsgIPSync         = "ip_sync"          // 在线 IP 快照 / 增量
-	MsgLogEvent       = "log_event"        // 日志事件（脱敏）
-	MsgSyncState      = "sync_state"       // config_revision 同步状态
+	MsgIPSync          = "ip_sync"          // 在线 IP 快照 / 增量
+	MsgLogEvent        = "log_event"        // 日志事件（脱敏）
+	MsgSyncState       = "sync_state"       // config_revision 同步状态
 )
 
 // manager -> agent（Manager 下发任务，全部走任务系统）
 const (
-	MsgCreateNode    = "create_node"
-	MsgUpdateNode    = "update_node"
-	MsgDeleteNode    = "delete_node"
-	MsgEnableNode    = "enable_node"
-	MsgDisableNode   = "disable_node"
+	MsgCreateNode     = "create_node"
+	MsgUpdateNode     = "update_node"
+	MsgDeleteNode     = "delete_node"
+	MsgEnableNode     = "enable_node"
+	MsgDisableNode    = "disable_node"
 	MsgRestartSingbox = "restart_singbox"
-	MsgSetQuota      = "set_quota"
-	MsgResetQuota    = "reset_quota"
-	MsgSetIPLimit    = "set_ip_limit"
-	MsgSyncConfig    = "sync_config"
-	MsgRequestStatus = "request_status"
-	MsgUpdateAgent   = "update_agent"
+	MsgSetQuota       = "set_quota"
+	MsgResetQuota     = "reset_quota"
+	MsgSetIPLimit     = "set_ip_limit"
+	MsgSyncConfig     = "sync_config"
+	MsgRequestStatus  = "request_status"
+	MsgUpdateAgent    = "update_agent"
 )
 
 // 除上述之外，Manager 与 Agent 的握手还使用以下应答消息：

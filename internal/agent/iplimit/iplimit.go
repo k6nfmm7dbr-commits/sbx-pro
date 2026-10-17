@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/k6nfmm7dbr-commits/sbx-pro/internal/connection"
@@ -80,8 +81,14 @@ type Enforcer struct {
 	PortOf func(nodeID string) (int, error)
 	// ActiveIPs 返回某端口的当前活跃公网 IP 集合。
 	ActiveIPs func(port int) (map[string]struct{}, error)
+	// ApplyBlock 应用阻断集合；nil 时用默认 nftables 实现。
+	// 注入点：测试环境没有 nft，也能验证「阻断决策」是否正确。
+	ApplyBlock func(blocked map[string]bool) error
+	// BlockConfPath 覆盖 nft 规则文件路径；空值用默认 /run/sbx/iplimit.nft。
+	BlockConfPath string
 
-	lastBlocked map[string]bool // "node:ip" -> blocked
+	lastBlocked map[string]bool // 上次成功应用的阻断集合（IP -> blocked）
+	lastErr     error           // 最近一次应用失败的原因（nil = 已生效）
 }
 
 // Run 启动 enforcement 循环。
@@ -120,21 +127,43 @@ func (e *Enforcer) Check() error {
 
 	// 只有集合变化才重写规则。
 	if e.lastBlocked == nil || !sameSetString(e.lastBlocked, blocked) {
-		if err := applyBlock(blocked); err != nil {
+		if err := e.apply(blocked); err != nil {
+			// 应用失败必须让调用方看到（采集循环会记日志），同时保留
+			// lastErr 供状态查询区分「决策正确但未生效」与「已生效」。
+			e.lastErr = err
 			return err
 		}
+		e.lastErr = nil
 		e.lastBlocked = blocked
 	}
 	return nil
 }
 
-// applyBlock 应用 nftables IP 阻断 set。
-func applyBlock(blocked map[string]bool) error {
+// apply 应用阻断集合；ApplyBlock 注入了实现（测试）就用注入的。
+func (e *Enforcer) apply(blocked map[string]bool) error {
+	if e.ApplyBlock != nil {
+		return e.ApplyBlock(blocked)
+	}
+	return applyBlockTo(e.blockConfPath(), blocked)
+}
+
+// blockConfPath 返回 nft 规则文件路径。
+func (e *Enforcer) blockConfPath() string {
+	if e.BlockConfPath != "" {
+		return e.BlockConfPath
+	}
+	return "/run/sbx/iplimit.nft"
+}
+
+// LastError 返回最近一次阻断应用失败的原因；nil 表示当前集合已生效。
+func (e *Enforcer) LastError() error { return e.lastErr }
+
+// applyBlock 应用 nftables IP 阻断 set（默认实现）。
+func applyBlockTo(conf string, blocked map[string]bool) error {
 	rules := buildIPBlockRules(blocked)
-	if err := os.MkdirAll("/run/sbx", 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(conf), 0o755); err != nil {
 		return err
 	}
-	conf := "/run/sbx/iplimit.nft"
 	if err := fsx.WriteFileAtomic(conf, []byte(rules), 0o644); err != nil {
 		return err
 	}

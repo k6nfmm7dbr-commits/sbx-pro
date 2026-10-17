@@ -12,7 +12,7 @@ import (
 
 // fakeSender 记录发送的 delta，用于断言 sequence 唯一性与 delta 值。
 type fakeSender struct {
-	mu    sync.Mutex
+	mu     sync.Mutex
 	deltas []protocol.TrafficDelta
 }
 
@@ -56,7 +56,7 @@ func seedTotals(t *testing.T, db *database.DB, scope string, rx, tx int64) {
 }
 
 // TestComputeDeltasUniqueSequence 验证：同一轮多个 scope 各自分配唯一递增 sequence
-//（修复此前的「同一轮共用一个 sequence 导致 UNIQUE 冲突丢流量」bug）。
+// （修复此前的「同一轮共用一个 sequence 导致 UNIQUE 冲突丢流量」bug）。
 func TestComputeDeltasUniqueSequence(t *testing.T) {
 	s, snd, db := newTestSync(t, "m1")
 	defer db.Close()

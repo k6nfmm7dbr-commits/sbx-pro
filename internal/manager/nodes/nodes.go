@@ -53,16 +53,16 @@ type Node struct {
 
 // PublicNode 是脱敏后的节点 DTO（不含 config 中的敏感凭据）。
 type PublicNode struct {
-	NodeUUID    string `json:"node_uuid"`
-	MachineID   string `json:"machine_id"`
-	Name        string `json:"name"`
-	Protocol    string `json:"protocol"`
-	Port        int    `json:"port"`
-	Status      string `json:"status"`
-	QuotaLimit  int64  `json:"quota_limit"`
-	IPLimit     int    `json:"ip_limit"`
-	CreatedAt   int64  `json:"created_at"`
-	UpdatedAt   int64  `json:"updated_at"`
+	NodeUUID   string `json:"node_uuid"`
+	MachineID  string `json:"machine_id"`
+	Name       string `json:"name"`
+	Protocol   string `json:"protocol"`
+	Port       int    `json:"port"`
+	Status     string `json:"status"`
+	QuotaLimit int64  `json:"quota_limit"`
+	IPLimit    int    `json:"ip_limit"`
+	CreatedAt  int64  `json:"created_at"`
+	UpdatedAt  int64  `json:"updated_at"`
 }
 
 // Public 脱敏转换。
