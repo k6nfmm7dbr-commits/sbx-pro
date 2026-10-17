@@ -118,11 +118,11 @@ func TestIsTaskType(t *testing.T) {
 
 func TestTaskResultJSON(t *testing.T) {
 	tr := TaskResult{
-		TaskID:    "t1",
-		Status:    TaskSuccess,
-		Message:   "ok",
+		TaskID:          "t1",
+		Status:          TaskSuccess,
+		Message:         "ok",
 		AppliedRevision: 3,
-		CompletedAt: 12345,
+		CompletedAt:     12345,
 	}
 	data, err := json.Marshal(tr)
 	if err != nil {

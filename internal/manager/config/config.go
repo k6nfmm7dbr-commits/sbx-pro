@@ -49,13 +49,13 @@ func defaultConf() map[string]any {
 type Config struct {
 	raw map[string]any
 
-	DB          string
-	Listen      string
-	Port        int
-	AdminToken  string
-	TLSCert     string
-	TLSKey      string
-	TokenTTL    int64
+	DB         string
+	Listen     string
+	Port       int
+	AdminToken string
+	TLSCert    string
+	TLSKey     string
+	TokenTTL   int64
 }
 
 // Load 宽松读取（只读场景）。

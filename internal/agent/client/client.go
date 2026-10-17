@@ -29,7 +29,7 @@ func New(managerURL string) *Client {
 	}
 	return &Client{
 		ManagerURL: managerURL,
-		HTTP: &http.Client{Transport: tr, Timeout: 30 * time.Second},
+		HTTP:       &http.Client{Transport: tr, Timeout: 30 * time.Second},
 	}
 }
 

@@ -83,10 +83,10 @@ func indexOf(s, sub string) int {
 
 // TotalNode 是单节点累计流量。
 type TotalNode struct {
-	NodeUUID string `json:"node_uuid"`
+	NodeUUID  string `json:"node_uuid"`
 	MachineID string `json:"machine_id"`
-	Rx       int64  `json:"rx"`
-	Tx       int64  `json:"tx"`
+	Rx        int64  `json:"rx"`
+	Tx        int64  `json:"tx"`
 }
 
 // TotalsByMachine 返回累计流量汇总。machineID 为空时返回所有机器。

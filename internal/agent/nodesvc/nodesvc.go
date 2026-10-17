@@ -24,11 +24,11 @@ import (
 // Service 是 Agent 节点服务。
 type Service struct {
 	Store     *nodes.Store
-	Singbox   string // sing-box 二进制路径
-	Service   string // systemd 服务名（默认 sing-box）
+	Singbox   string                                                    // sing-box 二进制路径
+	Service   string                                                    // systemd 服务名（默认 sing-box）
 	checkOnly func(ctx context.Context, cfgPath string) (string, error) // 测试注入
-	restartFn func(ctx context.Context) error                            // 测试注入
-	healthFn  func() bool                                                // 测试注入
+	restartFn func(ctx context.Context) error                           // 测试注入
+	healthFn  func() bool                                               // 测试注入
 }
 
 // New 构造节点服务。singbox 默认 /usr/local/bin/sing-box。

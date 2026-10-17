@@ -23,15 +23,15 @@ import (
 
 // Limit 是一条节点限额。
 type Limit struct {
-	NodeID string // 本地节点 id（如 "2"）
-	LimitBytes int64 // 0 = 无限制
-	Exceeded bool   // 是否已达上限
+	NodeID     string // 本地节点 id（如 "2"）
+	LimitBytes int64  // 0 = 无限制
+	Exceeded   bool   // 是否已达上限
 }
 
 // State 是 quota 持久化状态。
 type State struct {
-	mu    sync.Mutex
-	DB    *sql.DB
+	mu     sync.Mutex
+	DB     *sql.DB
 	AppDir string
 }
 
