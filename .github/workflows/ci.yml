@@ -23,6 +23,8 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "以下文件未 gofmt："; echo "$unformatted"; exit 1
           fi
+      - name: 安装脚本语法检查
+        run: bash -n sbx.sh
       - name: go vet
         run: go vet ./...
       - name: go build
