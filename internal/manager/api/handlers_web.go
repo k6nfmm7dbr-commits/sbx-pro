@@ -32,8 +32,6 @@ func (s *Server) handleWeb(w http.ResponseWriter, r *http.Request, route string)
 		s.serveAsset(w, r, "login.js", "application/javascript; charset=utf-8")
 	case route == "/style.css":
 		s.serveAsset(w, r, "style.css", "text/css; charset=utf-8")
-	case route == "/extra.css":
-		s.serveAsset(w, r, "extra.css", "text/css; charset=utf-8")
 	case route == "/favicon.ico":
 		// 浏览器后台请求的图标：返回 204 避免 404 JSON 噪音。
 		w.WriteHeader(http.StatusNoContent)
@@ -43,7 +41,22 @@ func (s *Server) handleWeb(w http.ResponseWriter, r *http.Request, route string)
 	}
 }
 
-// handleLogin 处理管理员登录（POST /login，token 表单）。
+// handleLogout 清除登录 Cookie（POST /api/logout）。
+//
+// 登录 Cookie 是 HttpOnly，前端脚本读不到也删不掉，所以登出必须由服务端下发
+// 一个 MaxAge<0 的同名 Cookie 覆盖。清除后返回 204，前端直接跳登录页。
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "sbx_token",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	audit.Log(s.db.SQL(), "admin_logout", "", "", "ok", clientIP(r))
+	w.WriteHeader(http.StatusNoContent)
+}
 
 // handleLogin 处理管理员登录（POST /login，token 表单）。
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
