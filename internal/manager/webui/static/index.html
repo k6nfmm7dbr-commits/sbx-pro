@@ -1,153 +1,242 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light">
 <title>SBX Pro 控制台</title>
 <link rel="stylesheet" href="style.css">
-<link rel="stylesheet" href="extra.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <div class="brand-mark">SBX</div>
-    <div class="brand-text">
-      <h1>SBX Pro 控制台</h1>
-      <p id="status-txt" class="status-txt">连接中…</p>
-    </div>
-  </div>
-  <span id="pulse" class="pulse"></span>
-</header>
 
-<main class="main">
-  <!-- 首页 -->
-  <section id="view-home" class="view on">
+<main class="wrap">
+
+  <!-- ===== 总览 ===== -->
+  <section class="view on" id="view-home">
+
+    <div class="hero glass">
+      <div class="hero-label">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span>累计流量</span>
+      </div>
+      <span class="hero-sync" id="sync-label">—</span>
+      <div id="hero-total" class="hero-rate">—</div>
+      <div class="hero-pair">
+        <div class="pair up">
+          <i aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </i>
+          <div><small>上传</small><b id="hero-rx">—</b></div>
+        </div>
+        <div class="pair down">
+          <i aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+          </i>
+          <div><small>下载</small><b id="hero-tx">—</b></div>
+        </div>
+      </div>
+    </div>
+
     <div class="stats">
-      <div class="stat"><label>机器总数</label><strong id="kpi-machines">—</strong></div>
-      <div class="stat"><label>在线机器</label><strong id="kpi-online" class="up">—</strong></div>
-      <div class="stat"><label>节点总数</label><strong id="kpi-nodes">—</strong></div>
-      <div class="stat"><label>累计流量</label><strong id="kpi-total">—</strong></div>
+      <div class="stat glass">
+        <div class="stat-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          <span>机器总数</span>
+        </div>
+        <b id="kpi-machines">—</b>
+      </div>
+      <div class="stat glass">
+        <div class="stat-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+          <span>在线机器</span>
+        </div>
+        <b id="kpi-online">—</b>
+      </div>
+      <div class="stat glass">
+        <div class="stat-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v4m0 0-5.5 5.5M12 12l5.5 5.5"/></svg>
+          <span>节点总数</span>
+        </div>
+        <b id="kpi-nodes">—</b>
+      </div>
+      <div class="stat glass">
+        <div class="stat-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+          <span>异常节点</span>
+        </div>
+        <b id="kpi-bad">—</b>
+      </div>
+      <div class="stat glass wide">
+        <div class="stat-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/></svg>
+          <span>在线节点</span>
+        </div>
+        <b id="kpi-active">—</b>
+      </div>
     </div>
 
-    <section class="panel">
-      <div class="panel-head"><h2>机器概览</h2><span class="count">共 <b id="kpi-machine-count">0</b> 台</span></div>
-      <div id="home-machine-list" class="node-list"></div>
-      <div class="empty" id="home-machine-empty" style="display:none">暂无机器，请前往「接入」生成安装命令</div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><h2>异常节点</h2></div>
-      <div id="home-bad-nodes" class="node-list"></div>
-      <div class="empty" id="home-bad-empty" style="display:none">无异常节点</div>
-    </section>
-  </section>
-
-  <!-- 机器 -->
-  <section id="view-machines" class="view">
-    <section class="panel">
-      <div class="panel-head"><h2>机器</h2><span class="count">共 <b id="machines-count">0</b> 台</span></div>
-      <div id="machine-list" class="node-list"></div>
-      <div class="empty" id="machine-empty" style="display:none">暂无机器，请前往「接入」生成安装命令</div>
-    </section>
-  </section>
-
-  <!-- 节点 -->
-  <section id="view-nodes" class="view">
-    <section class="panel">
+    <div class="panel glass">
       <div class="panel-head">
+        <h2>机器</h2>
+        <span class="hint">点「详情」查看机器状态</span>
+      </div>
+      <div id="home-machine-cards" class="node-list"></div>
+    </div>
+
+    <div class="panel glass">
+      <div class="panel-head">
+        <h2>异常节点</h2>
+        <span class="hint">创建失败 / 配置异常 / 下发中</span>
+      </div>
+      <div id="home-bad-nodes" class="node-list"></div>
+    </div>
+
+  </section>
+
+  <!-- ===== 机器 ===== -->
+  <section class="view" id="view-machines">
+    <div class="panel glass manage-panel">
+      <div class="panel-head manage-head">
+        <h2>机器</h2>
+        <div class="manage-actions">
+          <button class="btn ghost" id="machines-refresh" type="button">刷新</button>
+        </div>
+      </div>
+      <div id="machine-list" class="node-list"></div>
+    </div>
+  </section>
+
+  <!-- ===== 节点 ===== -->
+  <section class="view" id="view-nodes">
+    <div class="panel glass manage-panel">
+      <div class="panel-head manage-head">
         <h2>节点</h2>
-        <button class="btn-primary" id="btn-add-node">＋ 添加节点</button>
+        <div class="manage-actions">
+          <button class="btn primary" id="node-create-open" type="button">添加节点</button>
+        </div>
       </div>
-      <div id="node-list" class="node-list"></div>
-      <div class="empty" id="node-empty" style="display:none">暂无节点</div>
-    </section>
+      <div id="node-cards" class="node-list"></div>
+    </div>
   </section>
 
-  <!-- 流量 -->
-  <section id="view-traffic" class="view">
-    <section class="panel">
-      <div class="panel-head"><h2>流量汇总</h2></div>
-      <div class="stats" style="margin-bottom:14px">
-        <div class="stat"><label>累计下载 (tx)</label><strong id="traffic-tx">—</strong></div>
-        <div class="stat"><label>累计上传 (rx)</label><strong id="traffic-rx">—</strong></div>
+  <!-- ===== 接入 ===== -->
+  <section class="view" id="view-join">
+    <div class="panel glass">
+      <div class="panel-head">
+        <h2>接入节点机</h2>
+        <span class="hint">Token 一次性 · 15 分钟有效</span>
       </div>
-      <div id="traffic-list" class="node-list"></div>
-      <div class="empty" id="traffic-empty" style="display:none">暂无流量数据</div>
-    </section>
+      <p class="hint-text">生成一条接入命令，复制到节点机执行，即可自动安装 Agent 并注册到本控制台。</p>
+      <div class="join-actions">
+        <button class="btn primary" id="btn-gen-token" type="button">生成接入命令</button>
+      </div>
+      <div id="join-result" class="node-links-list"></div>
+    </div>
   </section>
 
-  <!-- 接入 -->
-  <section id="view-join" class="view">
-    <section class="panel">
-      <div class="panel-head"><h2>接入节点机</h2></div>
-      <p class="hint-text">生成一条接入命令，复制到节点机执行即可自动安装并注册（Token 一次性、15 分钟有效）。</p>
-      <button class="btn-primary" id="btn-gen-token">生成接入 Token</button>
-      <div id="join-result" style="margin-top:14px"></div>
-    </section>
-  </section>
 </main>
 
-<nav class="tabbar">
-  <button class="tab on" data-view="home"><span class="ico">⌂</span>首页</button>
-  <button class="tab" data-view="machines"><span class="ico">▤</span>机器</button>
-  <button class="tab" data-view="nodes"><span class="ico">◎</span>节点</button>
-  <button class="tab" data-view="traffic"><span class="ico">↕</span>流量</button>
-  <button class="tab" data-view="join"><span class="ico">＋</span>接入</button>
+<nav class="dock glass">
+  <button class="tab on" data-view="home" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-6h6v6"/></svg>
+    <span>总览</span>
+  </button>
+  <button class="tab" data-view="machines" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+    <span>机器</span>
+  </button>
+  <button class="tab" data-view="nodes" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v4m0 0-5.5 5.5M12 12l5.5 5.5"/></svg>
+    <span>节点</span>
+  </button>
+  <button class="tab" data-view="join" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+    <span>接入</span>
+  </button>
+  <button class="tab logout-tab" id="logout-button" type="button" aria-label="登出">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 17l5-5-5-5M15 12H3"/><path d="M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/></svg>
+    <span>登出</span>
+  </button>
 </nav>
 
-<!-- 添加节点弹层 -->
-<div id="add-node-modal" class="modal" hidden>
-  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <h3 id="modal-title">添加节点</h3>
-    <form id="add-node-form" novalidate>
-      <label class="field-label" for="an-machine">服务器</label>
-      <select id="an-machine" name="machine_id" required></select>
+<div class="drawer-mask" id="drawer-mask"></div>
 
-      <label class="field-label" for="an-name">节点名称</label>
-      <input id="an-name" name="name" placeholder="例如：东京-01" required maxlength="64">
+<!-- ===== 机器详情抽屉 ===== -->
+<aside class="drawer" id="machine-drawer" role="dialog" aria-modal="true">
+  <header class="drawer-head">
+    <div><small>机器</small><h3 id="machine-drawer-name">—</h3></div>
+    <button class="icon-btn" id="machine-drawer-close" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </header>
+  <div class="drawer-body" id="machine-drawer-body"></div>
+  <footer class="drawer-foot">
+    <button class="btn ghost" id="machine-delete" type="button">删除管理关系</button>
+    <button class="btn primary" id="machine-drawer-done" type="button">关闭</button>
+  </footer>
+</aside>
 
-      <label class="field-label" for="an-protocol">协议</label>
-      <select id="an-protocol" name="protocol"></select>
+<!-- ===== 节点详情抽屉 ===== -->
+<aside class="drawer" id="node-detail-drawer" role="dialog" aria-modal="true">
+  <header class="drawer-head">
+    <div><small>节点</small><h3 id="node-detail-name">—</h3></div>
+    <button class="icon-btn" id="node-detail-close" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </header>
+  <div class="drawer-body" id="node-detail-body"></div>
+  <footer class="drawer-foot" id="node-detail-foot">
+    <button class="btn ghost" id="node-act-toggle" type="button">停用</button>
+    <button class="btn ghost" id="node-act-restart" type="button">重启</button>
+    <button class="btn primary" id="node-act-share" type="button">分享</button>
+  </footer>
+</aside>
 
-      <div id="an-dynamic"></div>
+<!-- ===== 节点分享抽屉 ===== -->
+<aside class="drawer" id="node-share-drawer" role="dialog" aria-modal="true">
+  <header class="drawer-head">
+    <div><small>节点分享</small><h3 id="node-share-name">—</h3></div>
+    <button class="icon-btn" id="node-share-close" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </header>
+  <div class="drawer-body"><div id="node-share-list" class="node-links-list"></div></div>
+  <footer class="drawer-foot"><button class="btn ghost" id="node-share-done" type="button">关闭</button></footer>
+</aside>
 
-      <label class="field-label" for="an-port">端口</label>
-      <input id="an-port" name="port" type="number" inputmode="numeric" placeholder="1-65535" required min="1" max="65535">
-
-      <div class="form-error" id="add-node-error" hidden></div>
-      <div class="form-actions">
-        <button type="button" class="btn-ghost" id="btn-cancel-node">取消</button>
-        <button type="submit" class="btn-primary" id="btn-submit-node">创建节点</button>
-      </div>
-    </form>
+<!-- ===== 添加节点抽屉 ===== -->
+<aside class="drawer" id="node-create-drawer" role="dialog" aria-modal="true">
+  <header class="drawer-head">
+    <div><small>节点</small><h3>添加节点</h3></div>
+    <button class="icon-btn" id="node-create-close" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </header>
+  <div class="drawer-body">
+    <section class="sect">
+      <label class="field"><small>服务器</small><select id="nc-machine"></select></label>
+      <label class="field"><small>节点名称</small><input id="nc-name" type="text" maxlength="64" placeholder="例如 东京-01" autocomplete="off"></label>
+      <label class="field"><small>协议</small><select id="nc-protocol"></select></label>
+    </section>
+    <section class="sect" id="nc-dynamic"></section>
+    <section class="sect">
+      <label class="field"><small>端口</small><input id="nc-port" type="number" min="1" max="65535" inputmode="numeric" placeholder="1-65535"></label>
+    </section>
+    <div class="err hidden" id="nc-error"></div>
   </div>
-</div>
+  <footer class="drawer-foot">
+    <button class="btn ghost" id="node-create-cancel" type="button">取消</button>
+    <button class="btn primary" id="node-create-save" type="button">创建节点</button>
+  </footer>
+</aside>
 
-<!-- 节点详情/操作弹层 -->
-<div id="node-detail-modal" class="modal" hidden>
-  <div class="modal-box" role="dialog" aria-modal="true">
-    <h3 id="node-detail-title">节点详情</h3>
-    <div id="node-detail-body" class="node-detail"></div>
-    <div id="share-result" style="margin:10px 0"></div>
-    <div class="form-actions">
-      <button type="button" class="btn-ghost" id="btn-close-detail">关闭</button>
-    </div>
-  </div>
-</div>
+<!-- ===== 确认抽屉 ===== -->
+<aside class="drawer drawer-sm" id="confirm-drawer" role="dialog" aria-modal="true">
+  <header class="drawer-head">
+    <div><small>请确认</small><h3 id="confirm-title">确认操作</h3></div>
+    <button class="icon-btn" id="confirm-close" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </header>
+  <div class="drawer-body"><p class="hint-text" id="confirm-text"></p></div>
+  <footer class="drawer-foot">
+    <button class="btn ghost" id="confirm-cancel" type="button">取消</button>
+    <button class="btn danger" id="confirm-ok" type="button">确认</button>
+  </footer>
+</aside>
 
-<!-- 确认弹层 -->
-<div id="confirm-modal" class="modal" hidden>
-  <div class="modal-box modal-box-sm" role="dialog" aria-modal="true">
-    <h3 id="confirm-title">确认</h3>
-    <p id="confirm-text" class="hint-text"></p>
-    <div class="form-actions">
-      <button type="button" class="btn-ghost" id="btn-confirm-cancel">取消</button>
-      <button type="button" class="btn-danger" id="btn-confirm-ok">确认</button>
-    </div>
-  </div>
-</div>
+<div id="toast" role="status"></div>
 
-<div id="toast" class="toast"></div>
 <script src="app.js"></script>
 </body>
 </html>

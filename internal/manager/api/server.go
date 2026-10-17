@@ -177,6 +177,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case route == "/api/traffic" && r.Method == http.MethodGet:
 		s.handleTraffic(w, r)
 
+	case route == "/api/logout" && r.Method == http.MethodPost:
+		s.handleLogout(w, r)
+
 	case route == "/api/audit" && r.Method == http.MethodGet:
 		s.handleAudit(w, r)
 
@@ -184,8 +187,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleWeb(w, r, route)
 	}
 }
-
-// routeNode 分发 /api/nodes/:id[/sub[/sub2]] 的节点子路由。
 
 // routeNode 分发 /api/nodes/:id[/sub[/sub2]] 的节点子路由。
 func (s *Server) routeNode(w http.ResponseWriter, r *http.Request, rest string) {
